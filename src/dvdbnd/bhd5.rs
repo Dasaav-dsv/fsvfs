@@ -20,9 +20,9 @@ mod tests {
 
     #[test]
     fn bad_bhd_extension() {
-        assert!(has_bhd_extension("data1.bdt"));
-        assert!(has_bhd_extension("data1.bdt5"));
-        assert!(has_bhd_extension("data1.xyzbdt"));
-        assert!(has_bhd_extension("data1.xyzbdt5"));
+        assert!(!has_bhd_extension("data1.bdt"));
+        assert!(!has_bhd_extension("data1.bdt5"));
+        assert!(!has_bhd_extension("data1.xyzbdt"));
+        assert!(!has_bhd_extension("data1.xyzbdt5"));
     }
 }
