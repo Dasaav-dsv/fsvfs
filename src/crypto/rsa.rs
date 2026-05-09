@@ -1,11 +1,23 @@
-use malachite::{Natural, platform::Limb};
+use std::{
+    io::{self, BufRead, BufReader, Cursor, Write},
+    mem,
+    num::NonZero,
+};
+
+use malachite::{Natural, base::num::arithmetic::traits::ModPow, platform::Limb};
 use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct RsaKey {
     n: Natural,
     e: Natural,
-    size: usize,
+    len: NonZero<usize>,
+}
+
+pub struct RsaDecryptor<'a, R> {
+    key: &'a RsaKey,
+    out: Cursor<Box<[u8]>>,
+    reader: BufReader<R>,
 }
 
 #[derive(Debug, Error)]
@@ -18,9 +30,19 @@ pub enum DecodeError {
 }
 
 const DER_INT: u8 = 0x02;
-const DER_SEQ: u8 = 0x30;
+const DER_SEQ: u8 = 0x10 | 0x20;
 
 impl RsaKey {
+    #[inline(always)]
+    pub fn in_block_len(&self) -> usize {
+        self.len.get()
+    }
+
+    #[inline(always)]
+    pub fn out_block_len(&self) -> usize {
+        self.len.get() - 1
+    }
+
     pub fn decode_from_pem(pem: &str) -> Result<Self, DecodeError> {
         let base64_content: String = pem
             .lines()
@@ -42,11 +64,126 @@ impl RsaKey {
         let n_bytes = decode_der_integer(&mut der).ok_or(DecodeError::Der)?;
         let e_bytes = decode_der_integer(&mut der).ok_or(DecodeError::Der)?;
 
+        let len = NonZero::new(n_bytes.len()).ok_or(DecodeError::Der)?;
+
         let n = natural_from_bytes_be(n_bytes);
         let e = natural_from_bytes_be(e_bytes);
-        let size = n_bytes.len();
 
-        Ok(RsaKey { n, e, size })
+        Ok(RsaKey { n, e, len })
+    }
+
+    pub fn decrypt_block_in(&self, block: &[u8], out: &mut [u8]) {
+        debug_assert_eq!(block.len(), self.in_block_len());
+
+        let c = natural_from_bytes_be(block);
+        let m = (&c).mod_pow(&self.e, &self.n);
+
+        natural_to_bytes_be_in(&m, out);
+    }
+
+    pub fn decrypt_blocks_in_place(&self, blocks: &mut [u8]) -> usize {
+        let in_block_len = self.in_block_len();
+        let out_block_len = self.out_block_len();
+
+        debug_assert!(blocks.len().is_multiple_of(in_block_len));
+
+        let mut in_block_tail = in_block_len;
+        let mut out_block_tail = out_block_len;
+
+        let mut c = Default::default();
+
+        while in_block_tail < blocks.len() {
+            natural_from_bytes_be_in(&blocks[in_block_tail - in_block_len..in_block_tail], &mut c);
+            let m = (&c).mod_pow(&self.e, &self.n);
+
+            natural_to_bytes_be_in(
+                &m,
+                &mut blocks[out_block_tail - out_block_len..out_block_tail],
+            );
+
+            in_block_tail += in_block_len;
+            out_block_tail += out_block_len;
+        }
+
+        out_block_tail - out_block_len
+    }
+}
+
+impl<'a, R: io::Read> RsaDecryptor<'a, R> {
+    pub fn new(key: &'a RsaKey, reader: R) -> Self {
+        let in_block_len = key.len.get();
+        let out_block_len = key.out_block_len();
+
+        let mut out = Cursor::new(vec![0; out_block_len].into_boxed_slice());
+        out.set_position(out_block_len as u64);
+
+        let reader = BufReader::with_capacity(in_block_len, reader);
+
+        Self { key, out, reader }
+    }
+}
+
+fn block_multiple_err(block_len: usize) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        format!(
+            "input is not a multiple of block size ({} bytes)",
+            block_len
+        ),
+    )
+}
+
+impl<R: io::Read> io::Read for RsaDecryptor<'_, R> {
+    fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+        let mut read = 0;
+
+        while !buf.is_empty() {
+            let out = self.out.fill_buf()?;
+
+            if !out.is_empty() {
+                let amt = buf.write(out)?;
+                self.out.consume(amt);
+                continue;
+            }
+
+            let block = self.reader.fill_buf()?;
+            let block_len = self.key.in_block_len();
+
+            if block.len() != block_len {
+                return Err(block_multiple_err(block_len));
+            }
+
+            self.key.decrypt_block_in(block, self.out.get_mut());
+
+            self.reader.consume(block_len);
+            read += block_len;
+
+            self.out.set_position(0);
+        }
+
+        Ok(read)
+    }
+
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        let mut read = self.out.read_to_end(buf)?;
+        let start_at = buf.len();
+
+        read += self.reader.read_to_end(buf)?;
+
+        let block_len = self.key.in_block_len();
+
+        if !buf
+            .len()
+            .checked_sub(start_at)
+            .is_some_and(|len| len.is_multiple_of(block_len))
+        {
+            return Err(block_multiple_err(block_len));
+        }
+
+        let end_at = self.key.decrypt_blocks_in_place(&mut buf[start_at..]);
+        buf.truncate(start_at + end_at);
+
+        Ok(read)
     }
 }
 
@@ -79,23 +216,44 @@ fn decode_der_integer<'a>(der: &mut &'a [u8]) -> Option<&'a [u8]> {
     der.split_off(..length)
 }
 
+const LIMB_SIZE: usize = size_of::<Limb>();
+
 fn natural_from_bytes_be(bytes: &[u8]) -> Natural {
-    const LIMB_SIZE: usize = size_of::<Limb>();
+    let mut n = Default::default();
+    natural_from_bytes_be_in(bytes, &mut n);
+    n
+}
+
+fn natural_from_bytes_be_in(bytes: &[u8], out: &mut Natural) {
+    let mut owned = mem::take(out).into_limbs_asc();
+    owned.clear();
 
     let rchunks = bytes.rchunks_exact(LIMB_SIZE);
     let remainder = rchunks.remainder();
-    let limbs = rchunks
-        .map(|chunk| Limb::from_be_bytes(chunk.try_into().unwrap()))
-        .chain([{
-            let mut limb = 0 as Limb;
-            for &b in remainder {
-                limb = (limb << 8) | (b as Limb);
-            }
-            limb
-        }])
-        .collect();
 
-    Natural::from_owned_limbs_asc(limbs)
+    owned.extend(
+        rchunks
+            .map(|chunk| Limb::from_be_bytes(*chunk.as_array().unwrap()))
+            .chain([{
+                let mut limb = 0 as Limb;
+                for &b in remainder {
+                    limb = (limb << 8) | (b as Limb);
+                }
+                limb
+            }]),
+    );
+
+    *out = Natural::from_owned_limbs_asc(owned);
+}
+
+fn natural_to_bytes_be_in(n: &Natural, output: &mut [u8]) {
+    for (chunk, limb) in output.rchunks_mut(LIMB_SIZE).zip(n.limbs()) {
+        let bytes = limb.to_be_bytes();
+        match chunk.first_chunk_mut() {
+            Some(chunk) => *chunk = bytes,
+            None => chunk.copy_from_slice(&bytes[LIMB_SIZE - chunk.len()..]),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -118,6 +276,8 @@ mod tests {
 
         assert_eq!(key.n, n);
         assert_eq!(key.e, e);
-        assert_eq!(key.size, 256);
+
+        assert_eq!(key.in_block_len(), 256);
+        assert_eq!(key.out_block_len(), 255);
     }
 }
