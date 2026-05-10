@@ -153,12 +153,15 @@ impl<R: io::Read> io::Read for RsaDecryptor<'_, R> {
                 return Err(block_multiple_err(block_len));
             }
 
-            self.key.decrypt_block_in(block, self.out.get_mut());
+            let out = buf.split_off_mut(..block_len).unwrap_or_else(|| {
+                self.out.set_position(0);
+                self.out.get_mut()
+            });
+
+            self.key.decrypt_block_in(block, out);
 
             self.reader.consume(block_len);
             read += block_len;
-
-            self.out.set_position(0);
         }
 
         Ok(read)
