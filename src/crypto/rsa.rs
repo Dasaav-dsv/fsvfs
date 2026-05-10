@@ -1,6 +1,6 @@
 use std::{
     io::{self, BufRead, BufReader, Cursor, Write},
-    mem,
+    iter, mem,
     num::NonZero,
 };
 
@@ -92,7 +92,7 @@ impl RsaKey {
 
         let mut c = Default::default();
 
-        while in_block_tail < blocks.len() {
+        while in_block_tail <= blocks.len() {
             natural_from_bytes_be_in(&blocks[in_block_tail - in_block_len..in_block_tail], &mut c);
             let m = (&c).mod_pow(&self.e, &self.n);
 
@@ -111,7 +111,7 @@ impl RsaKey {
 
 impl<'a, R: io::Read> RsaDecryptor<'a, R> {
     pub fn new(key: &'a RsaKey, reader: R) -> Self {
-        let in_block_len = key.len.get();
+        let in_block_len = key.in_block_len();
         let out_block_len = key.out_block_len();
 
         let mut out = Cursor::new(vec![0; out_block_len].into_boxed_slice());
@@ -143,35 +143,42 @@ impl<R: io::Read> io::Read for RsaDecryptor<'_, R> {
             if !out.is_empty() {
                 let amt = buf.write(out)?;
                 self.out.consume(amt);
+                read += amt;
                 continue;
             }
 
             let block = self.reader.fill_buf()?;
-            let block_len = self.key.in_block_len();
 
-            if block.len() != block_len {
-                return Err(block_multiple_err(block_len));
+            let in_block_len = self.key.in_block_len();
+            let out_block_len = self.key.out_block_len();
+
+            if block.len() != in_block_len {
+                return Err(block_multiple_err(in_block_len));
             }
 
-            let out = buf.split_off_mut(..block_len).unwrap_or_else(|| {
-                self.out.set_position(0);
-                self.out.get_mut()
-            });
+            let out = match buf.split_off_mut(..out_block_len) {
+                Some(out) => {
+                    read += out_block_len;
+                    out
+                }
+                None => {
+                    self.out.set_position(0);
+                    self.out.get_mut()
+                }
+            };
 
             self.key.decrypt_block_in(block, out);
-
-            self.reader.consume(block_len);
-            read += block_len;
+            self.reader.consume(in_block_len);
         }
 
         Ok(read)
     }
 
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        let mut read = self.out.read_to_end(buf)?;
+        let read = self.out.read_to_end(buf)?;
         let start_at = buf.len();
 
-        read += self.reader.read_to_end(buf)?;
+        self.reader.read_to_end(buf)?;
 
         let block_len = self.key.in_block_len();
 
@@ -183,10 +190,10 @@ impl<R: io::Read> io::Read for RsaDecryptor<'_, R> {
             return Err(block_multiple_err(block_len));
         }
 
-        let end_at = self.key.decrypt_blocks_in_place(&mut buf[start_at..]);
-        buf.truncate(start_at + end_at);
+        let in_place_len = self.key.decrypt_blocks_in_place(&mut buf[start_at..]);
+        buf.truncate(start_at + in_place_len);
 
-        Ok(read)
+        Ok(read + in_place_len)
     }
 }
 
@@ -250,7 +257,10 @@ fn natural_from_bytes_be_in(bytes: &[u8], out: &mut Natural) {
 }
 
 fn natural_to_bytes_be_in(n: &Natural, output: &mut [u8]) {
-    for (chunk, limb) in output.rchunks_mut(LIMB_SIZE).zip(n.limbs()) {
+    for (chunk, limb) in output
+        .rchunks_mut(LIMB_SIZE)
+        .zip(n.limbs().chain(iter::repeat(0)))
+    {
         let bytes = limb.to_be_bytes();
         match chunk.first_chunk_mut() {
             Some(chunk) => *chunk = bytes,
@@ -261,11 +271,19 @@ fn natural_to_bytes_be_in(n: &Natural, output: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, str::FromStr};
+    use std::{
+        fs::{self, File},
+        io::{Read, Seek, SeekFrom},
+        str::FromStr,
+    };
 
     use malachite::Natural;
+    use xxhash_rust::xxh3::xxh3_128;
 
-    use crate::{crypto::rsa::RsaKey, tests::with_steam_game_dir};
+    use crate::{
+        crypto::rsa::{RsaDecryptor, RsaKey},
+        tests::with_steam_game_dir,
+    };
 
     #[test]
     fn rsa_key_from_pem() {
@@ -285,7 +303,85 @@ mod tests {
     }
 
     #[test]
-    fn steam_game_rsa_decrypt() {
-        with_steam_game_dir(1245620, |install_dir| panic!("{install_dir:?}"));
+    fn steam_game_rsa_decrypt_all() {
+        with_ds3_data3(|reader, data3_len| {
+            let mut bytes = vec![];
+            let bytes_read = reader.read_to_end(&mut bytes).unwrap();
+
+            assert_eq!(bytes_read, bytes.len());
+            assert_eq!(bytes_read as u64, data3_len / 256 * 255);
+
+            let hash = xxh3_128(&bytes);
+
+            assert_eq!(hash, 0x9db871d3ca1f6ddc2a4d084e55f9dd28);
+        });
+    }
+
+    #[test]
+    fn steam_game_rsa_decrypt_first_block() {
+        with_ds3_data3(|reader, _| {
+            let mut bytes = [0; 32];
+            reader.read_exact(&mut bytes).unwrap();
+
+            assert_eq!(
+                bytes,
+                [
+                    0x42, 0x48, 0x44, 0x35, 0xFF, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xA5,
+                    0x9F, 0x01, 0x00, 0x67, 0x00, 0x00, 0x00, 0x25, 0x00, 0x00, 0x00, 0x09, 0x00,
+                    0x00, 0x00, 0x46, 0x44, 0x50, 0x5F
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn steam_game_rsa_decrypt_all_complex() {
+        with_ds3_data3(|reader, data3_len| {
+            let mut bytes = vec![];
+            let mut bytes_read = 0;
+
+            for amt in [
+                255, 256, 1, 0, 12, 4, 120, 4000, 3333, 1, 256, 5, 5, 5, 5, 4, 256,
+            ] {
+                let len = bytes.len();
+                bytes.resize(len + amt, 0);
+                reader.read_exact(bytes.split_at_mut(len).1).unwrap();
+                bytes_read += amt;
+            }
+
+            bytes_read += reader.read_to_end(&mut bytes).unwrap();
+
+            assert_eq!(bytes_read, bytes.len());
+            assert_eq!(bytes_read as u64, data3_len / 256 * 255);
+
+            let hash = xxh3_128(&bytes);
+
+            assert_eq!(hash, 0x9db871d3ca1f6ddc2a4d084e55f9dd28);
+        });
+    }
+
+    #[track_caller]
+    fn with_ds3_data3<F>(f: F)
+    where
+        F: FnOnce(&mut RsaDecryptor<'_, File>, u64),
+    {
+        with_steam_game_dir(374320, |install_dir| {
+            let pem = fs::read_to_string("dist/dvdbnd/Key/DarkSouls3_PC/Data3.pem").unwrap();
+            let key = RsaKey::decode_from_pem(&pem).unwrap();
+
+            let (data3, data3_len) = {
+                let mut data3 = File::open(install_dir.join("Game/Data3.bhd")).unwrap();
+
+                let old_pos = data3.stream_position().unwrap();
+                let len = data3.seek(SeekFrom::End(0)).unwrap();
+                data3.seek(SeekFrom::Start(old_pos)).unwrap();
+
+                (data3, len)
+            };
+
+            let mut reader = RsaDecryptor::new(&key, data3);
+
+            f(&mut reader, data3_len)
+        });
     }
 }
