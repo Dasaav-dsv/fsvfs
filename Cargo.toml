@@ -37,3 +37,6 @@ winfsp = { version = "0.12.4", default-features = false, features = [
     "build",
     "delayload",
 ] }
+
+[dev-dependencies]
+steamlocate = "2.1.0"

@@ -265,7 +265,7 @@ mod tests {
 
     use malachite::Natural;
 
-    use crate::crypto::rsa::RsaKey;
+    use crate::{crypto::rsa::RsaKey, tests::with_steam_game_dir};
 
     #[test]
     fn rsa_key_from_pem() {
@@ -282,5 +282,10 @@ mod tests {
 
         assert_eq!(key.in_block_len(), 256);
         assert_eq!(key.out_block_len(), 255);
+    }
+
+    #[test]
+    fn steam_game_rsa_decrypt() {
+        with_steam_game_dir(1245620, |install_dir| panic!("{install_dir:?}"));
     }
 }
