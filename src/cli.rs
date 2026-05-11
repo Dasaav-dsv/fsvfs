@@ -45,7 +45,7 @@ pub struct DvdbndArgs {
     ///
     /// This corresponds to the name of the direct parent folder of dictionary or key files,
     /// e.g. "--game DarkSouls_PC" -> "dvdbnd/Hash/DarkSouls_PC/dvdbnd*.txt".
-    /// 
+    ///
     /// By default fsvfs tries to match the keys and the names of the archives automatically.
     #[arg(short, long)]
     pub game: Option<String>,
