@@ -17,6 +17,11 @@ malachite = { version = "0.9.1", default-features = false, features = [
     "std",
 ] }
 memmap2 = "0.9.10"
+smallvec = { version = "1.15.1", features = [
+    "const_generics",
+    "union",
+    "const_new",
+] }
 thiserror = "2.0.18"
 tracing = "0.1.44"
 zerocopy = { version = "0.8.48", features = ["derive", "std"] }
@@ -41,3 +46,12 @@ winfsp = { version = "0.12.4", default-features = false, features = [
 [dev-dependencies]
 steamlocate = "2.1.0"
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+
+[profile.test.package.malachite]
+opt-level = 3
+
+[profile.test.package.malachite-nz]
+opt-level = 3
+
+[profile.test.package.xxhash-rust]
+opt-level = 3

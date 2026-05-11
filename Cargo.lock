@@ -301,6 +301,7 @@ dependencies = [
  "indexmap",
  "malachite",
  "memmap2",
+ "smallvec",
  "steamlocate",
  "thiserror",
  "tracing",

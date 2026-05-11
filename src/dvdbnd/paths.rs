@@ -1,43 +1,66 @@
-use std::{collections::BTreeSet, ops::Bound, path::Path, rc::Rc};
+use std::{
+    ffi::OsStr,
+    ops::Deref,
+    path::{Path, PathBuf},
+};
 
 use fxhash::FxBuildHasher;
 use indexmap::IndexMap;
 
+use crate::dvdbnd::bhd5::strip_bhd_extension;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BhdPath(Box<Path>);
+
 #[derive(Default, Debug)]
 pub struct ArchivePaths {
-    pub paths: IndexMap<Rc<str>, Box<Path>, FxBuildHasher>,
-    pub names: BTreeSet<Rc<str>>,
+    pub paths: IndexMap<Box<str>, BhdPath, FxBuildHasher>,
+}
+
+impl BhdPath {
+    pub fn new<P: Into<Box<Path>>>(path: P) -> Self {
+        let path = path.into();
+        debug_assert_eq!(path.extension(), Some(OsStr::new("bhd")));
+        Self(path)
+    }
+
+    pub fn as_bhd(&self) -> &Path {
+        &self.0
+    }
+
+    pub fn to_bdt(&self) -> PathBuf {
+        self.0.with_extension("bdt")
+    }
 }
 
 impl ArchivePaths {
     pub fn new(archive_paths: impl IntoIterator<Item: AsRef<Path>>) -> Self {
-        let (paths, names) = archive_paths
+        let paths = archive_paths
             .into_iter()
             .filter_map(|path| {
                 let path = path.as_ref();
-
-                let mut name = Rc::<str>::from(path.file_name()?.to_str()?);
-                Rc::make_mut(&mut name).make_ascii_lowercase();
-
-                let path = (name.clone(), Box::from(path));
-
-                Some((path, name))
+                let name = path.file_name()?.to_str().and_then(strip_bhd_extension)?;
+                Some((name.to_ascii_lowercase().into(), BhdPath::new(path)))
             })
-            .unzip();
+            .collect();
 
-        Self { paths, names }
+        Self { paths }
     }
+}
 
-    pub fn names_by_prefix<'a>(
-        &'a self,
-        prefix: &str,
-    ) -> impl Iterator<Item = &'a Rc<str>> + use<'a> {
-        let start = prefix.to_ascii_lowercase();
-        let end = start.clone() + "/";
-        self.names.range::<str, _>((
-            Bound::Included(start.as_str()),
-            Bound::Excluded(end.as_str()),
-        ))
+impl AsRef<Path> for BhdPath {
+    #[inline]
+    fn as_ref(&self) -> &Path {
+        self.as_bhd()
+    }
+}
+
+impl Deref for BhdPath {
+    type Target = Path;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_bhd()
     }
 }
 
@@ -45,47 +68,21 @@ impl ArchivePaths {
 mod tests {
     use crate::dvdbnd::paths::ArchivePaths;
 
-    const ARCHIVES: [&str; 4] = [
-        "Game/Data2.bdt",
-        "Game/Data2.bhd",
-        "Game/Data1.bdt",
-        "Game/Data1.bhd",
-    ];
-
     #[test]
     fn archive_paths_order() {
-        let archives = ArchivePaths::new(ARCHIVES);
+        let archives = ArchivePaths::new([
+            "Game/Data2.bdt",
+            "Game/Data2.bhd",
+            "Game/Data1.bdt",
+            "Game/Data1.bhd",
+        ]);
 
         assert!(
             archives
                 .paths
-                .values()
-                .filter_map(|path| path.to_str())
-                .eq(ARCHIVES)
-        );
-    }
-
-    #[test]
-    fn archive_paths_names() {
-        let archives = ArchivePaths::new(ARCHIVES);
-
-        assert!(archives.names.iter().map(|name| &**name).eq([
-            "data1.bdt",
-            "data1.bhd",
-            "data2.bdt",
-            "data2.bhd",
-        ]));
-    }
-
-    #[test]
-    fn archive_paths_names_by_prefix() {
-        let archives = ArchivePaths::new(ARCHIVES);
-
-        assert!(
-            archives
-                .names_by_prefix("data1")
-                .map(|name| &**name)
-                .eq(["data1.bdt", "data1.bhd"])
+                .iter()
+                .filter_map(|(name, path)| Some((path.to_str()?, &**name)))
+                .eq([("Game/Data2.bhd", "data2"), ("Game/Data1.bhd", "data1")])
         );
     }
 }

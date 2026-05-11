@@ -1,6 +1,6 @@
 use std::{mem::offset_of, path::Path};
 
-use zerocopy::{I32, Immutable, KnownLayout, TryFromBytes, U32, U64, Unaligned};
+use zerocopy::{BE, I32, Immutable, KnownLayout, LE, TryFromBytes, U32, U64, Unaligned};
 
 use crate::dvdbnd::bhd5::{
     byte_order::{Bom, ByteOrderExt, OneU32},
@@ -11,6 +11,12 @@ use crate::dvdbnd::bhd5::{
 mod byte_order;
 mod consts;
 mod magic;
+
+pub const BHD5_HEADER_LEN: usize = {
+    let size = size_of::<Bhd5Header<LE>>();
+    assert!(size == size_of::<Bhd5Header<BE>>());
+    size
+};
 
 #[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
 #[repr(C, align(1))]
@@ -44,6 +50,15 @@ pub struct Bhd5Header<O: ByteOrderExt> {
 
     /// 64-bit offset of bucket header (DSR format) or 32-bit length of a "salt" string.
     bucket_offset2_or_salt_len: U64<O>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Bhd5Format {
+    DarkSouls,
+    DarkSoulsRemastered,
+    DarkSouls2,
+    DarkSouls3,
+    EldenRing,
 }
 
 impl<O: ByteOrderExt> Bhd5Header<O> {
@@ -88,11 +103,24 @@ pub fn has_bhd_extension<P: AsRef<Path>>(path: P) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("bhd") || ext.eq_ignore_ascii_case("bhd5"))
 }
 
+pub fn strip_bhd_extension(name: &str) -> Option<&str> {
+    let name = name.strip_suffix("5").unwrap_or(name);
+
+    let (name, suffix) = name
+        .as_bytes()
+        .split_at_checked(name.len().wrapping_sub(4))?;
+
+    suffix
+        .eq_ignore_ascii_case(b".bhd")
+        .then(|| // SAFETY: valid UTF-8 slice before ".bhd"
+             unsafe { str::from_utf8_unchecked(name) })
+}
+
 #[cfg(test)]
 mod tests {
     use zerocopy::{BE, LE, TryFromBytes};
 
-    use crate::dvdbnd::bhd5::{Bhd5Header, has_bhd_extension};
+    use crate::dvdbnd::bhd5::{Bhd5Header, has_bhd_extension, strip_bhd_extension};
 
     #[test]
     fn ds1_bhd_header() {
@@ -166,5 +194,21 @@ mod tests {
         assert!(!has_bhd_extension("data1.bdt5"));
         assert!(!has_bhd_extension("data1.xyzbdt"));
         assert!(!has_bhd_extension("data1.xyzbdt5"));
+    }
+
+    #[test]
+    fn strip_good_bhd_extension() {
+        assert_eq!(strip_bhd_extension("data1.bhd"), Some("data1"));
+        assert_eq!(strip_bhd_extension("data1.bhd5"), Some("data1"));
+        assert_eq!(strip_bhd_extension("DATA1.BHD"), Some("DATA1"));
+        assert_eq!(strip_bhd_extension("DATA1.BHD5"), Some("DATA1"));
+    }
+
+    #[test]
+    fn strip_bad_bhd_extension() {
+        assert_eq!(strip_bhd_extension("data1.bdt"), None);
+        assert_eq!(strip_bhd_extension("data1.bdt5"), None);
+        assert_eq!(strip_bhd_extension("data1.xyzbdt"), None);
+        assert_eq!(strip_bhd_extension("data1.xyzbdt5"), None);
     }
 }
