@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{mem::offset_of, path::Path};
 
 use zerocopy::{I32, Immutable, KnownLayout, TryFromBytes, U32, U64, Unaligned};
 
@@ -48,6 +48,7 @@ pub struct Bhd5Header<O: ByteOrderExt> {
 
 impl<O: ByteOrderExt> Bhd5Header<O> {
     pub const IS_LE: bool = O::IS_LE;
+    pub const SALT_OFFSET: u32 = offset_of!(Self, bucket_offset) as u32 + 4;
 
     pub fn is_dsr_format(&self) -> bool {
         self.bucket_offset == U32::ZERO
@@ -68,9 +69,13 @@ impl<O: ByteOrderExt> Bhd5Header<O> {
 
     pub fn salt_len(&self) -> Option<usize> {
         if !self.is_dsr_format() {
-            let [b1, b2, b3, b4, ..] = self.bucket_offset2_or_salt_len.to_bytes();
-            let salt_len = U32::<O>::from_bytes([b1, b2, b3, b4]).get();
-            return Some(salt_len as usize);
+            let bucket_offset = self.bucket_offset.get();
+
+            let [b0, b1, b2, b3, ..] = self.bucket_offset2_or_salt_len.to_bytes();
+            let salt_len = U32::<O>::from_bytes([b0, b1, b2, b3]).get();
+
+            return (Self::SALT_OFFSET <= bucket_offset.saturating_sub(salt_len))
+                .then_some(salt_len as usize);
         }
 
         None
@@ -99,6 +104,7 @@ mod tests {
             ],
             5,
             24,
+            None,
         );
     }
 
@@ -112,6 +118,7 @@ mod tests {
             ],
             103,
             37,
+            Some(9),
         );
     }
 
@@ -125,17 +132,24 @@ mod tests {
             ],
             239,
             34,
+            Some(6),
         );
     }
 
     #[track_caller]
-    fn test_bhd_header(bytes: &[u8], bucket_count: usize, bucket_offset: u64) {
+    fn test_bhd_header(
+        bytes: &[u8],
+        bucket_count: usize,
+        bucket_offset: u64,
+        salt_len: Option<usize>,
+    ) {
         let _ = Bhd5Header::<BE>::try_ref_from_prefix(bytes).unwrap_err();
         let header = Bhd5Header::<LE>::try_ref_from_prefix(bytes).unwrap().0;
 
         assert!(!header.is_dsr_format());
         assert_eq!(header.bucket_count(), bucket_count);
         assert_eq!(header.bucket_offset(), bucket_offset);
+        assert_eq!(header.salt_len(), salt_len);
     }
 
     #[test]
