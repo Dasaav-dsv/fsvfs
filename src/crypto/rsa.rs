@@ -29,6 +29,15 @@ pub enum DecodeError {
     Der,
 }
 
+#[derive(Debug, Error)]
+pub enum DecryptError {
+    #[error("input is not a multiple of block size ({0} bytes)")]
+    Size(usize),
+
+    #[error("input is not reduced mod `n` of the key")]
+    Base,
+}
+
 const DER_INT: u8 = 0x02;
 const DER_SEQ: u8 = 0x10 | 0x20;
 
@@ -72,20 +81,33 @@ impl RsaKey {
         Ok(RsaKey { n, e, len })
     }
 
-    pub fn decrypt_block_in(&self, block: &[u8], out: &mut [u8]) {
-        debug_assert_eq!(block.len(), self.in_block_len());
+    pub fn decrypt_block_in(&self, block: &[u8], out: &mut [u8]) -> Result<(), DecryptError> {
+        let in_block_len = self.in_block_len();
+
+        if block.len() != in_block_len {
+            return Err(DecryptError::Size(in_block_len));
+        }
 
         let c = natural_from_bytes_be(block);
+
+        if c >= self.n {
+            return Err(DecryptError::Base);
+        }
+
         let m = (&c).mod_pow(&self.e, &self.n);
 
         natural_to_bytes_be_in(&m, out);
+
+        Ok(())
     }
 
-    pub fn decrypt_blocks_in_place(&self, blocks: &mut [u8]) -> usize {
+    pub fn decrypt_blocks_in_place(&self, blocks: &mut [u8]) -> Result<usize, DecryptError> {
         let in_block_len = self.in_block_len();
         let out_block_len = self.out_block_len();
 
-        debug_assert!(blocks.len().is_multiple_of(in_block_len));
+        if !blocks.len().is_multiple_of(in_block_len) {
+            return Err(DecryptError::Size(in_block_len));
+        }
 
         let mut in_block_tail = in_block_len;
         let mut out_block_tail = out_block_len;
@@ -94,6 +116,11 @@ impl RsaKey {
 
         while in_block_tail <= blocks.len() {
             natural_from_bytes_be_in(&blocks[in_block_tail - in_block_len..in_block_tail], &mut c);
+
+            if c >= self.n {
+                return Err(DecryptError::Base);
+            }
+
             let m = (&c).mod_pow(&self.e, &self.n);
 
             natural_to_bytes_be_in(
@@ -105,7 +132,7 @@ impl RsaKey {
             out_block_tail += out_block_len;
         }
 
-        out_block_tail - out_block_len
+        Ok(out_block_tail - out_block_len)
     }
 }
 
@@ -121,16 +148,6 @@ impl<'a, R: io::Read> RsaDecryptor<'a, R> {
 
         Self { key, out, reader }
     }
-}
-
-fn block_multiple_err(block_len: usize) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::UnexpectedEof,
-        format!(
-            "input is not a multiple of block size ({} bytes)",
-            block_len
-        ),
-    )
 }
 
 impl<R: io::Read> io::Read for RsaDecryptor<'_, R> {
@@ -152,10 +169,6 @@ impl<R: io::Read> io::Read for RsaDecryptor<'_, R> {
             let in_block_len = self.key.in_block_len();
             let out_block_len = self.key.out_block_len();
 
-            if block.len() != in_block_len {
-                return Err(block_multiple_err(in_block_len));
-            }
-
             let out = match buf.split_off_mut(..out_block_len) {
                 Some(out) => {
                     read += out_block_len;
@@ -167,7 +180,7 @@ impl<R: io::Read> io::Read for RsaDecryptor<'_, R> {
                 }
             };
 
-            self.key.decrypt_block_in(block, out);
+            self.key.decrypt_block_in(block, out)?;
             self.reader.consume(in_block_len);
         }
 
@@ -180,20 +193,16 @@ impl<R: io::Read> io::Read for RsaDecryptor<'_, R> {
 
         self.reader.read_to_end(buf)?;
 
-        let block_len = self.key.in_block_len();
-
-        if !buf
-            .len()
-            .checked_sub(start_at)
-            .is_some_and(|len| len.is_multiple_of(block_len))
-        {
-            return Err(block_multiple_err(block_len));
-        }
-
-        let in_place_len = self.key.decrypt_blocks_in_place(&mut buf[start_at..]);
+        let in_place_len = self.key.decrypt_blocks_in_place(&mut buf[start_at..])?;
         buf.truncate(start_at + in_place_len);
 
         Ok(read + in_place_len)
+    }
+}
+
+impl From<DecryptError> for io::Error {
+    fn from(e: DecryptError) -> Self {
+        Self::new(io::ErrorKind::InvalidInput, e)
     }
 }
 
