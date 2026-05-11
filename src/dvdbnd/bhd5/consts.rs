@@ -3,9 +3,10 @@ use zerocopy::{Immutable, KnownLayout, TryFromBytes, Unaligned};
 macro_rules! enum_constant {
     ($($i:ident = $b:literal$(,)?)+) => {
         $(
-            #[derive(Clone, Copy, Debug, Immutable, KnownLayout, Unaligned, TryFromBytes)]
+            #[derive(Clone, Copy, Default, Debug, Immutable, KnownLayout, Unaligned, TryFromBytes)]
             #[repr(u8)]
             pub enum $i {
+                #[default]
                 $i = $b,
             }
         )+

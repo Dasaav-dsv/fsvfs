@@ -4,19 +4,19 @@ use zerocopy::{BE, Immutable, KnownLayout, LE, TryFromBytes, Unaligned};
 
 use crate::dvdbnd::bhd5::consts::{BigEndian, LittleEndian, One, Zero};
 
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
+#[derive(Clone, Copy, Default, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
 #[repr(C)]
 pub struct Bom<O: ByteOrderExt>(O::BomValue);
 
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
+#[derive(Clone, Copy, Default, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
 #[repr(C)]
 pub struct OneU32<O: ByteOrderExt>(O::OneU32Value);
 
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
+#[derive(Clone, Copy, Default, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
 #[repr(C)]
 pub struct OneU32LE(One, Zero, Zero, Zero);
 
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
+#[derive(Clone, Copy, Default, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
 #[repr(C)]
 pub struct OneU32BE(Zero, Zero, Zero, One);
 
