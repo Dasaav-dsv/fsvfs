@@ -83,17 +83,16 @@ impl<O: ByteOrderExt> Bhd5Header<O> {
     }
 
     pub fn salt_len(&self) -> Option<usize> {
-        if !self.is_dsr_format() {
-            let bucket_offset = self.bucket_offset.get();
-
-            let [b0, b1, b2, b3, ..] = self.bucket_offset2_or_salt_len.to_bytes();
-            let salt_len = U32::<O>::from_bytes([b0, b1, b2, b3]).get();
-
-            return (Self::SALT_OFFSET <= bucket_offset.saturating_sub(salt_len))
-                .then_some(salt_len as usize);
+        if self.is_dsr_format() {
+            return None;
         }
 
-        None
+        let bucket_offset = self.bucket_offset.get();
+
+        let [b0, b1, b2, b3, ..] = self.bucket_offset2_or_salt_len.to_bytes();
+        let salt_len = U32::<O>::from_bytes([b0, b1, b2, b3]).get();
+
+        (Self::SALT_OFFSET.checked_add(salt_len)? <= bucket_offset).then_some(salt_len as usize)
     }
 }
 
