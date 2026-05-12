@@ -66,7 +66,7 @@ impl Deref for BhdPath {
 
 #[cfg(test)]
 mod tests {
-    use crate::dvdbnd::paths::ArchivePaths;
+    use crate::dvdbnd::path::ArchivePaths;
 
     #[test]
     fn archive_paths_order() {

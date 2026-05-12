@@ -15,12 +15,12 @@ use crate::{
     crypto::rsa::{RsaDecryptor, RsaKey},
     dvdbnd::{
         bhd5::{BHD5_HEADER_LEN, Bhd5Header},
-        paths::{ArchivePaths, BhdPath},
+        path::{ArchivePaths, BhdPath},
         prefix_and_parent_to_lowercase, recursive_read_files,
     },
 };
 
-pub struct KeysProvider<'a, 'k> {
+pub struct KeyProvider<'a, 'k> {
     archives: &'a ArchivePaths,
     keys_dir: &'k Path,
 }
@@ -33,7 +33,7 @@ pub struct Keys<'a> {
 
 type PemPathsMap = Vec<(Box<str>, SmallVec<[(Box<str>, Box<Path>); 1]>)>;
 
-impl<'a, 'k> KeysProvider<'a, 'k> {
+impl<'a, 'k> KeyProvider<'a, 'k> {
     pub fn new(archives: &'a ArchivePaths, keys_dir: &'k Path) -> Self {
         Self { archives, keys_dir }
     }
@@ -63,7 +63,7 @@ impl<'a, 'k> KeysProvider<'a, 'k> {
     }
 
     fn into_keys_for_game_with_filter<F>(
-        mut self,
+        self,
         game: Option<&str>,
         mut f: F,
     ) -> eyre::Result<Keys<'a>>
@@ -75,6 +75,7 @@ impl<'a, 'k> KeysProvider<'a, 'k> {
         let mut game_name = game;
         let mut game_index = None;
 
+        let mut cache = FxHashMap::default();
         let mut by_path = FxHashMap::default();
 
         for (name, bhd_path) in &self.archives.paths {
@@ -93,11 +94,17 @@ impl<'a, 'k> KeysProvider<'a, 'k> {
                 .unwrap_or_else(|| pem_paths.as_slice())
             {
                 for (_, pem_path) in pem_paths.iter().filter(|(pem_name, _)| pem_name == name) {
-                    let pem = fs::read_to_string(&pem_path)?;
-                    let key = RsaKey::decode_from_pem(&pem)?;
+                    let key = match cache.get(&**pem_path) {
+                        Some(key) => key,
+                        None => {
+                            let pem = fs::read_to_string(pem_path)?;
+                            let key = RsaKey::decode_from_pem(&pem)?;
+                            cache.entry(&**pem_path).or_insert(key)
+                        }
+                    };
 
                     if f(bhd_path, Some(&key))? {
-                        by_path.insert(bhd_path, Some(key));
+                        by_path.insert(bhd_path, Some(key.clone()));
                         game_name.get_or_insert(game);
                     }
                 }
@@ -136,7 +143,7 @@ impl<'a, 'k> KeysProvider<'a, 'k> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        dvdbnd::{keys::KeysProvider, paths::ArchivePaths},
+        dvdbnd::{keys::KeyProvider, path::ArchivePaths},
         tests::with_steam_game_dir,
     };
 
@@ -154,7 +161,7 @@ mod tests {
             ];
 
             let archives = ArchivePaths::new(BHDS.into_iter().map(|bhd| ds3_dir.join(bhd)));
-            let keys = KeysProvider::new(&archives, "dist/dvdbnd/Key".as_ref())
+            let keys = KeyProvider::new(&archives, "dist/dvdbnd/Key".as_ref())
                 .into_keys_for_game(None)
                 .unwrap();
 
@@ -176,7 +183,7 @@ mod tests {
             ];
 
             let archives = ArchivePaths::new(BHDS.into_iter().map(|bhd| er_dir.join(bhd)));
-            let keys = KeysProvider::new(&archives, "dist/dvdbnd/Key".as_ref())
+            let keys = KeyProvider::new(&archives, "dist/dvdbnd/Key".as_ref())
                 .into_keys_for_game(None)
                 .unwrap();
 

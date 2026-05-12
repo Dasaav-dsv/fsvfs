@@ -11,14 +11,14 @@ use tracing::instrument;
 
 use crate::{
     cli::DvdbndArgs,
-    dvdbnd::{dict::Dictionary, keys::KeysProvider, paths::ArchivePaths},
+    dvdbnd::{dict::Dictionary, keys::KeyProvider, path::ArchivePaths},
 };
 
 mod bhd5;
 mod dict;
 mod hash;
 mod keys;
-mod paths;
+mod path;
 
 #[instrument(skip(archives), err)]
 pub fn mount(
@@ -30,7 +30,7 @@ pub fn mount(
 ) -> eyre::Result<()> {
     let archives = ArchivePaths::new(archives);
 
-    let keys = KeysProvider::new(&archives, keys_dir).into_keys_for_game(game)?;
+    let keys = KeyProvider::new(&archives, keys_dir).into_keys_for_game(game)?;
 
     let dict = Dictionary::from_dir_and_game(dict_dir, game)?;
 
