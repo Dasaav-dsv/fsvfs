@@ -19,20 +19,21 @@ Examples (Windows):
 pub enum Command {
     /// Mount DVDBND archives as a read-only filesystem.
     ///
-    /// Both BHD[5] and BDT files must be provided together.
+    /// Only the BHD[5] file paths are expected. BDT paths are ignored,
+    /// they are always assumed to be in the same directory as the BHD(s).
     Dvdbnd(DvdbndArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct DvdbndArgs {
-    /// Archives to mount (at least one BHD[5] and one BDT).
+    /// Archives to mount (at least one BHD[5]).
     ///
-    /// DVDBND archives are mounted in pairs: "Data1.bhd" and "Data1.bdt",
-    /// "Data2.bhd" and "Data2.bdt"...
+    /// DVDBND archives are mounted in pairs ("Game/Data1.bhd" and "Game/Data1.bdt",
+    /// "Game/Data2.bhd" and "Game/Data2.bdt"), the BDT(s) are expected next to each BHD[5].
     ///
     /// Note that Dark Souls 3 "Data0" is not actually a DVDBND archive,
     /// but an encrypted and compressed regulation file masking as one.
-    #[arg(num_args(2..))]
+    #[arg(num_args(1..))]
     pub archive: Vec<String>,
 
     /// Root at which to mount the filesystem (e.g. "/darksouls", or "Z:\").
