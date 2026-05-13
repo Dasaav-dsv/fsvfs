@@ -14,7 +14,7 @@ use zerocopy::{BE, LE, TryFromBytes};
 use crate::{
     crypto::rsa::{RsaDecryptor, RsaKey},
     dvdbnd::{
-        bhd5::{BHD5_HEADER_LEN, Bhd5Header},
+        bhd5::format::{BHD5_HEADER_LEN, Bhd5Header},
         path::{ArchivePaths, BhdPath},
         prefix_and_parent_to_lowercase, recursive_read_files,
     },
@@ -27,11 +27,11 @@ pub struct KeyProvider<'a, 'k> {
 
 #[derive(Default, Debug)]
 pub struct Keys<'a> {
-    game: Box<str>,
+    game: Option<Box<str>>,
     by_path: FxHashMap<&'a BhdPath, Option<RsaKey>>,
 }
 
-type PemPathsMap = Vec<(Box<str>, SmallVec<[(Box<str>, Box<Path>); 1]>)>;
+type PemPathMap = Vec<(Box<str>, SmallVec<[(Box<str>, Box<Path>); 1]>)>;
 
 impl<'a, 'k> KeyProvider<'a, 'k> {
     pub fn new(archives: &'a ArchivePaths, keys_dir: &'k Path) -> Self {
@@ -72,7 +72,7 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
     {
         let pem_paths = self.find_pem_paths()?;
 
-        let mut game_name = game;
+        let mut game = game;
         let mut game_index = None;
 
         let mut cache = FxHashMap::default();
@@ -84,9 +84,9 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
                 continue;
             }
 
-            for (game, pem_paths) in game_index
+            for (game_name, pem_paths) in game_index
                 .or_else(|| {
-                    game_index = game_name
+                    game_index = game
                         .and_then(|game| pem_paths.binary_search_by_key(&game, |(k, _)| k).ok());
                     game_index
                 })
@@ -105,21 +105,19 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
 
                     if f(bhd_path, Some(&key))? {
                         by_path.insert(bhd_path, Some(key.clone()));
-                        game_name.get_or_insert(game);
+                        game.get_or_insert(game_name);
                     }
                 }
             }
         }
 
-        let game = game_name.ok_or_eyre("unable to determine key for archives")?;
-
         Ok(Keys {
-            game: game.into(),
+            game: game.map(Box::from),
             by_path,
         })
     }
 
-    fn find_pem_paths(&self) -> io::Result<PemPathsMap> {
+    fn find_pem_paths(&self) -> io::Result<PemPathMap> {
         recursive_read_files(self.keys_dir)?
             .filter_map(|file| match file {
                 Ok(file) => file
@@ -128,7 +126,7 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
                     .then_some(Ok(file)),
                 res => Some(res),
             })
-            .try_fold(PemPathsMap::new(), |mut map, path| -> io::Result<_> {
+            .try_fold(PemPathMap::new(), |mut map, path| -> io::Result<_> {
                 let path = path?.into_boxed_path();
                 let (name, game) = prefix_and_parent_to_lowercase(&path);
                 match map.binary_search_by_key(&&*game, |(k, _)| k) {
@@ -165,7 +163,7 @@ mod tests {
                 .into_keys_for_game(None)
                 .unwrap();
 
-            assert_eq!(&*keys.game, "darksouls3_pc");
+            assert_eq!(keys.game.as_deref(), Some("darksouls3_pc"));
             assert_eq!(keys.by_path.len(), 7);
         });
     }
@@ -187,7 +185,7 @@ mod tests {
                 .into_keys_for_game(None)
                 .unwrap();
 
-            assert_eq!(&*keys.game, "eldenring_pc");
+            assert_eq!(keys.game.as_deref(), Some("eldenring_pc"));
             assert_eq!(keys.by_path.len(), 6);
         });
     }
