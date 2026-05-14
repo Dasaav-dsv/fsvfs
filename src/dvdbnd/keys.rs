@@ -14,7 +14,7 @@ use zerocopy::{BE, LE, TryFromBytes};
 use crate::{
     crypto::rsa::{RsaDecryptor, RsaKey},
     dvdbnd::{
-        bhd5::format::{BHD5_HEADER_LEN, Bhd5Header},
+        bhd5::format::{BHD5_HEADER_LEN, Header as Bhd5Header},
         path::{ArchivePaths, BhdPath},
         prefix_and_parent_to_lowercase, recursive_read_files,
     },
