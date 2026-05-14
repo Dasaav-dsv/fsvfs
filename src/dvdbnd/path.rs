@@ -20,7 +20,12 @@ pub struct ArchivePaths {
 impl BhdPath {
     pub fn new<P: Into<Box<Path>>>(path: P) -> Self {
         let path = path.into();
-        debug_assert_eq!(path.extension(), Some(OsStr::new("bhd")));
+
+        debug_assert!(
+            path.extension() == Some(OsStr::new("bhd"))
+                || path.extension() == Some(OsStr::new("bhd5"))
+        );
+
         Self(path)
     }
 

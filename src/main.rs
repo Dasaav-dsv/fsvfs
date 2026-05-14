@@ -24,42 +24,43 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, path::Path, sync::Once};
+    use std::path::PathBuf;
 
     use color_eyre::eyre;
 
-    #[track_caller]
-    pub fn with_steam_game_dir<F: FnOnce(&Path)>(app_id: u32, f: F) {
-        if env::var_os("NO_STEAM_TESTS").is_some_and(|var| var == "1") {
-            return;
-        }
+    #[allow(unused)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[repr(u32)]
+    pub enum SteamAppId {
+        DarkSouls = 211420,
+        DarkSouls2 = 236430,
+        DarkSouls2SotFS = 335300,
+        DarkSouls3 = 374320,
+        DarkSoulsRemastered = 570940,
+        Sekiro = 814380,
+        SekiroSoundtrack = 1039230,
+        EldenRing = 1245620,
+        ArmoredCore6 = 1888160,
+        Nightreign = 2622380,
+    }
 
-        fn locate(app_id: u32) -> eyre::Result<std::path::PathBuf> {
+    impl SteamAppId {
+        pub fn install_dir(self) -> eyre::Result<PathBuf> {
+            if self == Self::SekiroSoundtrack {
+                let sekiro_dir = Self::Sekiro.install_dir()?;
+                return Ok(sekiro_dir.join("Artwork_MiniSoundtrack"));
+            }
+
             for steam_dir in steamlocate::locate_all()? {
-                if let Ok(Some((app, lib))) = steam_dir.find_app(app_id) {
+                if let Ok(Some((app, lib))) = steam_dir.find_app(self as u32) {
                     return Ok(lib.resolve_app_dir(&app));
                 }
             }
 
-            Err(eyre::eyre!("not found in any Steam library"))
-        }
-
-        match locate(app_id) {
-            Ok(app_path) => f(&app_path),
-            Err(e) => {
-                let mut e = Some(e);
-
-                static ONCE: Once = Once::new();
-                ONCE.call_once(|| e = Some(eyre::eyre!(
-                    "{}\n(to suppress tests that require certain Steam games run with `NO_STEAM_TESTS=1` environment variable)",
-                    e.take().unwrap()
-                )));
-
-                panic!(
-                    "unable to locate installation for Steam game with app id ({app_id}): {}",
-                    e.unwrap()
-                )
-            }
+            Err(eyre::eyre!(
+                "unable to locate installation for Steam game ({self:?}) with app id ({})",
+                self as u32,
+            ))
         }
     }
 }

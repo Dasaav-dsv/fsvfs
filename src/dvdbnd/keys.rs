@@ -5,7 +5,7 @@ use std::{
     slice,
 };
 
-use color_eyre::eyre::{self, OptionExt};
+use color_eyre::eyre;
 use fxhash::FxHashMap;
 use smallvec::{SmallVec, smallvec_inline};
 use tracing::warn;
@@ -27,8 +27,8 @@ pub struct KeyProvider<'a, 'k> {
 
 #[derive(Default, Debug)]
 pub struct Keys<'a> {
-    game: Option<Box<str>>,
-    by_path: FxHashMap<&'a BhdPath, Option<RsaKey>>,
+    pub game: Option<Box<str>>,
+    pub by_path: FxHashMap<&'a BhdPath, Option<RsaKey>>,
 }
 
 type PemPathMap = Vec<(Box<str>, SmallVec<[(Box<str>, Box<Path>); 1]>)>;
@@ -142,51 +142,72 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
 mod tests {
     use crate::{
         dvdbnd::{keys::KeyProvider, path::ArchivePaths},
-        tests::with_steam_game_dir,
+        tests::SteamAppId,
     };
 
     #[test]
-    fn steam_game_keys_for_ds3() {
-        with_steam_game_dir(374320, |ds3_dir| {
-            const BHDS: [&str; 7] = [
-                "Game/Data1.bhd",
-                "Game/Data2.bhd",
-                "Game/Data3.bhd",
-                "Game/Data4.bhd",
-                "Game/Data5.bhd",
-                "Game/DLC1.bhd",
-                "Game/DLC2.bhd",
-            ];
-
-            let archives = ArchivePaths::new(BHDS.into_iter().map(|bhd| ds3_dir.join(bhd)));
-            let keys = KeyProvider::new(&archives, "dist/dvdbnd/Key".as_ref())
-                .into_keys_for_game(None)
-                .unwrap();
-
-            assert_eq!(keys.game.as_deref(), Some("darksouls3_pc"));
-            assert_eq!(keys.by_path.len(), 7);
-        });
+    #[ignore]
+    fn ds2_detect_keys() {
+        keys_for_detected_game(SteamAppId::DarkSouls2);
     }
 
     #[test]
-    fn steam_game_keys_for_er() {
-        with_steam_game_dir(1245620, |er_dir| {
-            const BHDS: [&str; 6] = [
-                "Game/sd/sd.bhd",
-                "Game/sd/sd_dlc02.bhd",
-                "Game/Data1.bhd",
-                "Game/Data2.bhd",
-                "Game/Data3.bhd",
-                "Game/DLC.bhd",
-            ];
+    #[ignore]
+    fn ds2s_detect_keys() {
+        keys_for_detected_game(SteamAppId::DarkSouls2SotFS);
+    }
 
-            let archives = ArchivePaths::new(BHDS.into_iter().map(|bhd| er_dir.join(bhd)));
-            let keys = KeyProvider::new(&archives, "dist/dvdbnd/Key".as_ref())
-                .into_keys_for_game(None)
-                .unwrap();
+    #[test]
+    #[ignore]
+    fn ds3_detect_keys() {
+        keys_for_detected_game(SteamAppId::DarkSouls2);
+    }
 
-            assert_eq!(keys.game.as_deref(), Some("eldenring_pc"));
-            assert_eq!(keys.by_path.len(), 6);
-        });
+    #[test]
+    #[ignore]
+    fn sekiro_detect_keys() {
+        keys_for_detected_game(SteamAppId::Sekiro);
+    }
+
+    #[test]
+    #[ignore]
+    fn sekiro_ost_detect_keys() {
+        keys_for_detected_game(SteamAppId::SekiroSoundtrack);
+    }
+
+    #[test]
+    #[ignore]
+    fn er_detect_keys() {
+        keys_for_detected_game(SteamAppId::EldenRing);
+    }
+
+    #[test]
+    #[ignore]
+    fn ac6_detect_keys() {
+        keys_for_detected_game(SteamAppId::ArmoredCore6);
+    }
+
+    #[test]
+    #[ignore]
+    fn nr_detect_keys() {
+        keys_for_detected_game(SteamAppId::Nightreign);
+    }
+
+    #[track_caller]
+    fn keys_for_detected_game(game: SteamAppId) {
+        let install_dir = game.install_dir().unwrap();
+        let bhds = game.bhd_paths();
+
+        let archives = ArchivePaths::new(bhds.into_iter().map(|bhd| install_dir.join(bhd)));
+        let keys = KeyProvider::new(&archives, "dist/dvdbnd/Key".as_ref())
+            .into_keys_for_game(None)
+            .unwrap();
+
+        assert_eq!(
+            keys.game.as_deref(),
+            Some(&*game.game_name().to_ascii_lowercase())
+        );
+
+        assert_eq!(keys.by_path.len(), bhds.len());
     }
 }

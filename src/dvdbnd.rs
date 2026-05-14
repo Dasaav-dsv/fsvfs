@@ -106,3 +106,137 @@ fn prefix_and_parent_to_lowercase(path: &Path) -> (Box<str>, Box<str>) {
         parent.to_ascii_lowercase().into_boxed_str(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use color_eyre::eyre;
+    use fxhash::{FxBuildHasher, FxHashMap};
+
+    use crate::{
+        dvdbnd::{
+            keys::{KeyProvider, Keys},
+            path::ArchivePaths,
+        },
+        tests::SteamAppId,
+    };
+
+    impl SteamAppId {
+        pub const fn game_name(self) -> &'static str {
+            match self {
+                Self::DarkSouls => "DarkSouls_PC",
+                Self::DarkSouls2 => "DarkSouls2_PC",
+                Self::DarkSouls2SotFS => "DarkSouls2Scholar_PC",
+                Self::DarkSouls3 => "DarkSouls3_PC",
+                Self::DarkSoulsRemastered => "DarkSouls_PC",
+                Self::Sekiro => "Sekiro_PC",
+                Self::SekiroSoundtrack => "SekiroSoundtrack_PC",
+                Self::EldenRing => "EldenRing_PC",
+                Self::ArmoredCore6 => "ArmoredCore6_PC",
+                Self::Nightreign => "EldenRingNightreign_PC",
+            }
+        }
+
+        pub const fn bhd_paths(self) -> &'static [&'static str] {
+            match self {
+                Self::DarkSouls => &[
+                    "DATA/dvdbnd0.bhd5",
+                    "DATA/dvdbnd1.bhd5",
+                    "DATA/dvdbnd2.bhd5",
+                    "DATA/dvdbnd3.bhd5",
+                ],
+                Self::DarkSouls2 => &[
+                    "Game/GameDataEbl.bhd",
+                    "Game/HqChrEbl.bhd",
+                    "Game/HqMapEbl.bhd",
+                    "Game/HqObjEbl.bhd",
+                    "Game/HqPartsEbl.bhd",
+                ],
+                Self::DarkSouls2SotFS => &[
+                    "Game/GameDataEbl.bhd",
+                    "Game/LqChrEbl.bhd",
+                    "Game/LqMapEbl.bhd",
+                    "Game/LqObjEbl.bhd",
+                    "Game/LqPartsEbl.bhd",
+                ],
+                Self::DarkSouls3 => &[
+                    "Game/Data1.bhd",
+                    "Game/Data2.bhd",
+                    "Game/Data3.bhd",
+                    "Game/Data4.bhd",
+                    "Game/Data5.bhd",
+                    "Game/DLC1.bhd",
+                    "Game/DLC2.bhd",
+                ],
+                Self::DarkSoulsRemastered => &[],
+                Self::Sekiro => &[
+                    "Data1.bhd",
+                    "Data2.bhd",
+                    "Data3.bhd",
+                    "Data4.bhd",
+                    "Data5.bhd",
+                ],
+                Self::SekiroSoundtrack => &["Data.bhd"],
+                Self::EldenRing => &[
+                    "Game/sd/sd.bhd",
+                    "Game/sd/sd_dlc02.bhd",
+                    "Game/Data0.bhd",
+                    "Game/Data1.bhd",
+                    "Game/Data2.bhd",
+                    "Game/Data3.bhd",
+                    "Game/DLC.bhd",
+                ],
+                Self::ArmoredCore6 => &[
+                    "Game/sd/sd.bhd",
+                    "Game/Data0.bhd",
+                    "Game/Data1.bhd",
+                    "Game/Data2.bhd",
+                    "Game/Data3.bhd",
+                ],
+                Self::Nightreign => &[
+                    "Game/sd/sd.bhd",
+                    "Game/sd/sd_dlc01.bhd",
+                    "Game/data0.bhd",
+                    "Game/data1.bhd",
+                    "Game/data2.bhd",
+                    "Game/data3.bhd",
+                    "Game/dlc01.bhd",
+                ],
+            }
+        }
+
+        pub fn bhd_keys(self) -> eyre::Result<Keys<'static>> {
+            static KEYS: Mutex<FxHashMap<SteamAppId, &'static ArchivePaths>> =
+                Mutex::new(FxHashMap::with_hasher(FxBuildHasher::new()));
+
+            let install_dir = self.install_dir().unwrap();
+
+            let mut keys = match KEYS.lock() {
+                Ok(keys) => keys,
+                Err(poisoned) => {
+                    KEYS.clear_poison();
+                    poisoned.into_inner()
+                }
+            };
+
+            let archives = keys.entry(self).or_insert_with(|| {
+                let paths = self
+                    .bhd_paths()
+                    .into_iter()
+                    .map(|path| install_dir.join(path));
+
+                let archives = Box::new(ArchivePaths::new(paths));
+
+                Box::leak(archives)
+            });
+
+            let game = Some(self.game_name());
+            let keys = KeyProvider::new(archives, "dist/dvdbnd/Key".as_ref())
+                .into_keys_for_game(game)
+                .unwrap();
+
+            Ok(keys)
+        }
+    }
+}

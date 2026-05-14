@@ -2,8 +2,7 @@ use std::{mem::offset_of, ptr::NonNull};
 
 use thiserror::Error;
 use zerocopy::{
-    BE, FromBytes, I32, Immutable, KnownLayout, LE, TryCastError, TryFromBytes, TryReadError, U32,
-    U64, Unaligned,
+    BE, FromBytes, I32, Immutable, KnownLayout, LE, TryCastError, TryFromBytes, U32, U64, Unaligned,
 };
 
 use crate::dvdbnd::bhd5::{
@@ -63,7 +62,7 @@ pub struct Header<O: ByteOrderExt> {
     /// 0 = big endian, 0xff = little endian.
     byte_order: Bom<O>,
 
-    /// 0 or 1, can help distinguish pre-DS3 formats if 0.
+    /// 0 or 1.
     unk05: bool,
 
     /// Always zero, padding for `unk08`.
@@ -118,18 +117,14 @@ pub struct EntryDarkSouls2<O: ByteOrderExt> {
     pub file_size: I32<O>,
     pub file_offset: U64<O>,
     pub file_hash_offset: U64<O>,
-    encryption_offset: U64<O>,
+    pub encryption_offset: U64<O>,
 }
 
 #[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
 #[repr(C, align(1))]
 pub struct EntryDarkSouls3<O: ByteOrderExt> {
-    pub path_hash: U32<O>,
-    pub padded_file_size: I32<O>,
-    pub file_offset: U64<O>,
-    pub file_hash_offset: U64<O>,
-    encryption_offset: U64<O>,
-    pub file_size: I32<O>,
+    pub inner: EntryDarkSouls2<O>,
+    pub unpadded_file_size: I32<O>,
     unk24: ZeroU32<O>,
 }
 
@@ -137,11 +132,11 @@ pub struct EntryDarkSouls3<O: ByteOrderExt> {
 #[repr(C, align(1))]
 pub struct EntryEldenRing<O: ByteOrderExt> {
     pub path_hash: U64<O>,
-    pub padded_file_size: I32<O>,
     pub file_size: I32<O>,
+    pub unpadded_file_size: I32<O>,
     pub file_offset: U64<O>,
     pub file_hash_offset: U64<O>,
-    encryption_offset: U64<O>,
+    pub encryption_offset: U64<O>,
 }
 
 #[derive(Debug, KnownLayout, Immutable, Unaligned, FromBytes)]
@@ -164,13 +159,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         let header = Self::try_ref_header(bytes)?;
 
         match header.salt_len() {
-            Some(salt_len) => {
-                if header.unk05 {
-                    Self::try_ref_ds3_er(bytes, header, salt_len)
-                } else {
-                    Self::try_ref_ds2(bytes, header, salt_len)
-                }
-            }
+            Some(salt_len) => Self::try_ref_ds2_ds3_er(bytes, header, salt_len),
             None => {
                 if header.is_dsr_format() {
                     Self::try_ref_dsr(bytes, header)
@@ -234,13 +223,13 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
             .ok_or(TryRefFileError::Entry)?;
 
         Ok(Self {
-            format: Format::DarkSouls,
+            format: Format::DarkSoulsRemastered,
             entries,
             salt: None,
         })
     }
 
-    fn try_ref_ds2(
+    fn try_ref_ds2_ds3_er(
         bytes: &'a [u8],
         header: &Header<O>,
         salt_len: usize,
@@ -254,41 +243,16 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
             try_ref_slice_helper::<Bucket<O>>(bytes, header.bucket_count(), header.bucket_offset())
                 .ok_or(TryRefFileError::Bucket)?;
 
-        let entries = buckets
-            .iter()
-            .map(|bucket| {
-                try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
-                    .map(Entries::DarkSouls2)
-            })
-            .collect::<Option<Vec<_>>>()
-            .ok_or(TryRefFileError::Entry)?;
-
-        Ok(Self {
-            format: Format::DarkSouls2,
-            entries,
-            salt,
-        })
-    }
-
-    fn try_ref_ds3_er(
-        bytes: &'a [u8],
-        header: &Header<O>,
-        salt_len: usize,
-    ) -> Result<Self, TryRefFileError<O>> {
-        let salt_start = Header::<O>::SALT_OFFSET;
-        let salt = salt_start
-            .checked_add(salt_len)
-            .and_then(|end| bytes.get(salt_start..end));
-
-        let buckets =
-            try_ref_slice_helper::<Bucket<O>>(bytes, header.bucket_count(), header.bucket_offset())
-                .ok_or(TryRefFileError::Bucket)?;
-
+        let mut has_offset_0 = false;
         let entries_ds3 = buckets
             .iter()
             .map(|bucket| {
                 try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
-                    .filter(|entries| entries.iter().all(Self::is_valid_entry_ds3))
+                    .filter(|entries| {
+                        entries
+                            .iter()
+                            .all(|entry| Self::is_valid_entry_ds3(entry, header, &mut has_offset_0))
+                    })
                     .map(Entries::DarkSouls3)
             })
             .collect::<Option<Vec<_>>>();
@@ -296,6 +260,28 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         if let Some(entries) = entries_ds3 {
             return Ok(Self {
                 format: Format::DarkSouls3,
+                entries,
+                salt,
+            });
+        }
+
+        let mut has_offset_0 = false;
+        let entries_ds2 = buckets
+            .iter()
+            .map(|bucket| {
+                try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
+                    .filter(|entries| {
+                        entries
+                            .iter()
+                            .all(|entry| Self::is_valid_entry_ds2(entry, header, &mut has_offset_0))
+                    })
+                    .map(Entries::DarkSouls2)
+            })
+            .collect::<Option<Vec<_>>>();
+
+        if let Some(entries) = entries_ds2 {
+            return Ok(Self {
+                format: Format::DarkSouls2,
                 entries,
                 salt,
             });
@@ -317,10 +303,38 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         })
     }
 
-    fn is_valid_entry_ds3(entry: &EntryDarkSouls3<O>) -> bool {
-        let file_size = entry.file_size.get();
-        let padded_file_size = entry.padded_file_size.get();
-        file_size >= 0 && padded_file_size >= 0 && padded_file_size.saturating_sub(511) >= file_size
+    fn is_valid_entry_ds2(
+        entry: &EntryDarkSouls2<O>,
+        header: &Header<O>,
+        has_offset_0: &mut bool,
+    ) -> bool {
+        let is_offset_0 = entry.file_offset == U64::ZERO;
+
+        if is_offset_0 && *has_offset_0 {
+            return false;
+        }
+
+        *has_offset_0 |= is_offset_0;
+
+        let header_size = header.file_size.get() as u64;
+
+        entry.file_size >= 0
+            && entry.encryption_offset < header_size
+            && entry.file_hash_offset < header_size
+    }
+
+    fn is_valid_entry_ds3(
+        entry: &EntryDarkSouls3<O>,
+        header: &Header<O>,
+        has_offset_0: &mut bool,
+    ) -> bool {
+        if !Self::is_valid_entry_ds2(&entry.inner, header, has_offset_0) {
+            return false;
+        }
+
+        let unpadded_file_size = entry.unpadded_file_size.get();
+
+        unpadded_file_size >= 0 && entry.inner.file_size >= unpadded_file_size
     }
 }
 
@@ -376,9 +390,15 @@ impl<O: ByteOrderExt> Header<O> {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs::File, io::Read};
+
     use zerocopy::{BE, LE, TryFromBytes};
 
-    use crate::dvdbnd::bhd5::format::Header;
+    use crate::{
+        crypto::rsa::RsaDecryptor,
+        dvdbnd::bhd5::format::{File as Bhd5File, Format, Header},
+        tests::SteamAppId,
+    };
 
     #[test]
     fn ds1_bhd_header() {
@@ -436,5 +456,86 @@ mod tests {
         assert_eq!(header.bucket_count(), bucket_count);
         assert_eq!(header.bucket_offset(), bucket_offset);
         assert_eq!(header.salt_len(), salt_len);
+    }
+
+    #[test]
+    #[ignore]
+    fn ds1_bhd_format() {
+        expect_bhd_format(SteamAppId::DarkSouls, Format::DarkSouls);
+    }
+
+    #[test]
+    #[ignore]
+    fn ds2_bhd_format() {
+        expect_bhd_format(SteamAppId::DarkSouls2, Format::DarkSouls2);
+    }
+
+    #[test]
+    #[ignore]
+    fn ds2s_bhd_format() {
+        expect_bhd_format(SteamAppId::DarkSouls2SotFS, Format::DarkSouls2);
+    }
+
+    #[test]
+    #[ignore]
+    fn ds3_bhd_format() {
+        expect_bhd_format(SteamAppId::DarkSouls3, Format::DarkSouls3);
+    }
+
+    #[test]
+    #[ignore]
+    fn sekiro_bhd_format() {
+        expect_bhd_format(SteamAppId::Sekiro, Format::DarkSouls3);
+    }
+
+    #[test]
+    #[ignore]
+    fn sekiro_ost_bhd_format() {
+        expect_bhd_format(SteamAppId::SekiroSoundtrack, Format::DarkSouls3);
+    }
+
+    #[test]
+    #[ignore]
+    fn er_bhd_format() {
+        expect_bhd_format(SteamAppId::EldenRing, Format::EldenRing);
+    }
+
+    #[test]
+    #[ignore]
+    fn ac6_bhd_format() {
+        expect_bhd_format(SteamAppId::ArmoredCore6, Format::EldenRing);
+    }
+
+    #[test]
+    #[ignore]
+    fn nr_bhd_format() {
+        expect_bhd_format(SteamAppId::Nightreign, Format::EldenRing);
+    }
+
+    #[track_caller]
+    fn expect_bhd_format(game: SteamAppId, format: Format) {
+        let keys = game.bhd_keys().unwrap();
+        let files = keys
+            .by_path
+            .iter()
+            .map(|(path, key)| {
+                let mut bytes = vec![];
+                let mut file = File::open(path).unwrap();
+
+                match key {
+                    Some(key) => RsaDecryptor::new(key, file)
+                        .read_to_end(&mut bytes)
+                        .unwrap(),
+                    None => file.read_to_end(&mut bytes).unwrap(),
+                };
+
+                (*path, bytes)
+            })
+            .collect::<Vec<_>>();
+
+        for (path, bytes) in files {
+            let file = Bhd5File::<LE>::try_ref_from_bytes(&bytes).unwrap();
+            assert_eq!(file.format, format, "{:?}", path.as_ref());
+        }
     }
 }

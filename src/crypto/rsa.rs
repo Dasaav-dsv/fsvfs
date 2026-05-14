@@ -291,7 +291,7 @@ mod tests {
 
     use crate::{
         crypto::rsa::{RsaDecryptor, RsaKey},
-        tests::with_steam_game_dir,
+        tests::SteamAppId,
     };
 
     #[test]
@@ -312,7 +312,8 @@ mod tests {
     }
 
     #[test]
-    fn steam_game_rsa_decrypt_all() {
+    #[ignore]
+    fn ds3_rsa_decrypt_all() {
         with_ds3_data3(|reader, data3_len| {
             let mut bytes = vec![];
             let bytes_read = reader.read_to_end(&mut bytes).unwrap();
@@ -327,7 +328,8 @@ mod tests {
     }
 
     #[test]
-    fn steam_game_rsa_decrypt_first_block() {
+    #[ignore]
+    fn ds3_rsa_decrypt_first_block() {
         with_ds3_data3(|reader, _| {
             let mut bytes = [0; 32];
             reader.read_exact(&mut bytes).unwrap();
@@ -344,7 +346,8 @@ mod tests {
     }
 
     #[test]
-    fn steam_game_rsa_decrypt_all_complex() {
+    #[ignore]
+    fn ds3_rsa_decrypt_all_complex() {
         with_ds3_data3(|reader, data3_len| {
             let mut bytes = vec![];
             let mut bytes_read = 0;
@@ -374,23 +377,23 @@ mod tests {
     where
         F: FnOnce(&mut RsaDecryptor<'_, File>, u64),
     {
-        with_steam_game_dir(374320, |install_dir| {
-            let pem = fs::read_to_string("dist/dvdbnd/Key/DarkSouls3_PC/Data3.pem").unwrap();
-            let key = RsaKey::decode_from_pem(&pem).unwrap();
+        let ds3_dir = SteamAppId::DarkSouls3.install_dir().unwrap();
 
-            let (data3, data3_len) = {
-                let mut data3 = File::open(install_dir.join("Game/Data3.bhd")).unwrap();
+        let pem = fs::read_to_string("dist/dvdbnd/Key/DarkSouls3_PC/Data3.pem").unwrap();
+        let key = RsaKey::decode_from_pem(&pem).unwrap();
 
-                let old_pos = data3.stream_position().unwrap();
-                let len = data3.seek(SeekFrom::End(0)).unwrap();
-                data3.seek(SeekFrom::Start(old_pos)).unwrap();
+        let (data3, data3_len) = {
+            let mut data3 = File::open(ds3_dir.join("Game/Data3.bhd")).unwrap();
 
-                (data3, len)
-            };
+            let old_pos = data3.stream_position().unwrap();
+            let len = data3.seek(SeekFrom::End(0)).unwrap();
+            data3.seek(SeekFrom::Start(old_pos)).unwrap();
 
-            let mut reader = RsaDecryptor::new(&key, data3);
+            (data3, len)
+        };
 
-            f(&mut reader, data3_len)
-        });
+        let mut reader = RsaDecryptor::new(&key, data3);
+
+        f(&mut reader, data3_len)
     }
 }
