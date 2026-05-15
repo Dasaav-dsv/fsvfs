@@ -1,4 +1,4 @@
-use std::{mem::offset_of, ptr::NonNull};
+use std::{mem::offset_of, ops::Deref, ptr::NonNull};
 
 use thiserror::Error;
 use zerocopy::{
@@ -24,6 +24,7 @@ pub enum Format {
 pub struct File<'a, O: ByteOrderExt> {
     pub format: Format,
     pub entries: Vec<Entries<'a, O>>,
+    pub encryption: Vec<Option<&'a Encryption<O>>>,
     pub salt: Option<&'a [u8]>,
 }
 
@@ -37,6 +38,9 @@ pub enum TryRefFileError<O: ByteOrderExt> {
 
     #[error("malformed file entry")]
     Entry,
+
+    #[error("malformed file entry encryption data")]
+    Encryption,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -158,16 +162,73 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
     pub fn try_ref_from_bytes(bytes: &'a [u8]) -> Result<Self, TryRefFileError<O>> {
         let header = Self::try_ref_header(bytes)?;
 
-        match header.salt_len() {
-            Some(salt_len) => Self::try_ref_ds2_ds3_er(bytes, header, salt_len),
+        let mut file = match header.salt_len() {
+            Some(salt_len) => Self::try_ref_ds2_ds3_er(bytes, header, salt_len)?,
             None => {
                 if header.is_dsr_format() {
-                    Self::try_ref_dsr(bytes, header)
+                    Self::try_ref_dsr(bytes, header)?
                 } else {
-                    Self::try_ref_ds1(bytes, header)
+                    Self::try_ref_ds1(bytes, header)?
                 }
             }
+        };
+
+        file.try_ref_encryption(bytes)?;
+
+        Ok(file)
+    }
+
+    fn try_ref_encryption(&mut self, bytes: &'a [u8]) -> Result<(), TryRefFileError<O>> {
+        let total_len = self.entries.iter().map(Entries::len).sum();
+
+        self.encryption = vec![None; total_len];
+
+        if matches!(self.format, Format::DarkSouls | Format::DarkSoulsRemastered) {
+            return Ok(());
         }
+
+        macro_rules! try_ref_encryption_entries {
+            ($self:ident, $inner:ident, $start_index:ident) => {
+                for (entry, encryption_out) in
+                    $inner.iter().zip(&mut $self.encryption[$start_index..])
+                {
+                    if entry.encryption_offset == U64::ZERO {
+                        continue;
+                    }
+
+                    let offset = usize::try_from(entry.encryption_offset.get())
+                        .map_err(|_| TryRefFileError::Encryption)?;
+
+                    let bytes = bytes.get(offset..).ok_or(TryRefFileError::Encryption)?;
+                    let (encryption, _) = Encryption::<O>::ref_from_prefix_with_elems(bytes, 0)
+                        .map_err(|_| TryRefFileError::Encryption)?;
+
+                    let n_ranges = usize::try_from(encryption.range_count.get())
+                        .map_err(|_| TryRefFileError::Encryption)?;
+
+                    let (encryption, _) =
+                        Encryption::<O>::ref_from_prefix_with_elems(bytes, n_ranges)
+                            .map_err(|_| TryRefFileError::Encryption)?;
+
+                    *encryption_out = Some(encryption);
+                }
+            };
+        }
+
+        for (entries, start_index) in self.entries.iter().scan(0, |sum, entries| {
+            let index = *sum;
+            *sum += entries.len();
+            Some((entries, index))
+        }) {
+            match entries {
+                Entries::DarkSouls2(inner) => try_ref_encryption_entries!(self, inner, start_index),
+                Entries::DarkSouls3(inner) => try_ref_encryption_entries!(self, inner, start_index),
+                Entries::EldenRing(inner) => try_ref_encryption_entries!(self, inner, start_index),
+                Entries::DarkSouls(_) => unreachable!("unexpected ds1 format"),
+            }
+        }
+
+        Ok(())
     }
 
     fn try_ref_header(
@@ -201,6 +262,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         Ok(Self {
             format: Format::DarkSouls,
             entries,
+            encryption: vec![],
             salt: None,
         })
     }
@@ -225,6 +287,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         Ok(Self {
             format: Format::DarkSoulsRemastered,
             entries,
+            encryption: vec![],
             salt: None,
         })
     }
@@ -261,6 +324,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
             return Ok(Self {
                 format: Format::DarkSouls3,
                 entries,
+                encryption: vec![],
                 salt,
             });
         }
@@ -283,6 +347,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
             return Ok(Self {
                 format: Format::DarkSouls2,
                 entries,
+                encryption: vec![],
                 salt,
             });
         }
@@ -299,6 +364,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         Ok(Self {
             format: Format::EldenRing,
             entries,
+            encryption: vec![],
             salt,
         })
     }
@@ -328,13 +394,13 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         header: &Header<O>,
         has_offset_0: &mut bool,
     ) -> bool {
-        if !Self::is_valid_entry_ds2(&entry.inner, header, has_offset_0) {
+        if !Self::is_valid_entry_ds2(entry, header, has_offset_0) {
             return false;
         }
 
         let unpadded_file_size = entry.unpadded_file_size.get();
 
-        unpadded_file_size >= 0 && entry.inner.file_size >= unpadded_file_size
+        unpadded_file_size >= 0 && entry.file_size >= unpadded_file_size
     }
 }
 
@@ -385,6 +451,26 @@ impl<O: ByteOrderExt> Header<O> {
 
         ((Self::SALT_OFFSET as u32).checked_add(salt_len)? <= bucket_offset)
             .then_some(salt_len as usize)
+    }
+}
+
+impl<O: ByteOrderExt> Entries<'_, O> {
+    fn len(&self) -> usize {
+        match self {
+            Self::DarkSouls(inner) => inner.len(),
+            Self::DarkSouls2(inner) => inner.len(),
+            Self::DarkSouls3(inner) => inner.len(),
+            Self::EldenRing(inner) => inner.len(),
+        }
+    }
+}
+
+impl<O: ByteOrderExt> Deref for EntryDarkSouls3<O> {
+    type Target = EntryDarkSouls2<O>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
