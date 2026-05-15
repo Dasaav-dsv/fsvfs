@@ -23,7 +23,7 @@ pub enum Format {
 #[derive(Clone, Debug)]
 pub struct File<'a, O: ByteOrderExt> {
     pub format: Format,
-    pub entries: Vec<Entries<'a, O>>,
+    pub buckets: Vec<Buckets<'a, O>>,
     pub encryption: Vec<Option<&'a Encryption<O>>>,
     pub salt: Option<&'a [u8]>,
 }
@@ -33,22 +33,19 @@ pub enum TryRefFileError<O: ByteOrderExt> {
     #[error(transparent)]
     Header(#[from] TryCastError<&'static [()], Header<O>>),
 
-    #[error("malformed bucket file entry range")]
+    #[error("malformed bucket file entry")]
     Bucket,
-
-    #[error("malformed file entry")]
-    Entry,
 
     #[error("malformed file entry encryption data")]
     Encryption,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum Entries<'a, O: ByteOrderExt> {
-    DarkSouls(&'a [EntryDarkSouls<O>]),
-    DarkSouls2(&'a [EntryDarkSouls2<O>]),
-    DarkSouls3(&'a [EntryDarkSouls3<O>]),
-    EldenRing(&'a [EntryEldenRing<O>]),
+pub enum Buckets<'a, O: ByteOrderExt> {
+    DarkSouls(&'a [FileEntryDs<O>]),
+    DarkSouls2(&'a [FileEntryDs2<O>]),
+    DarkSouls3(&'a [FileEntryDs3<O>]),
+    EldenRing(&'a [FileEntryEr<O>]),
 }
 
 pub const BHD5_HEADER_LEN: usize = {
@@ -93,14 +90,14 @@ pub struct Header<O: ByteOrderExt> {
 
 #[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, FromBytes)]
 #[repr(C, align(1))]
-struct Bucket<O: ByteOrderExt> {
+struct BucketHeader<O: ByteOrderExt> {
     entry_count: I32<O>,
     entry_offset: U32<O>,
 }
 
 #[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
 #[repr(C, align(1))]
-struct BucketDSR<O: ByteOrderExt> {
+struct BucketHeaderDsr<O: ByteOrderExt> {
     entry_count: I32<O>,
     unk04: OneU32<O>,
     entry_offset: U64<O>,
@@ -108,7 +105,7 @@ struct BucketDSR<O: ByteOrderExt> {
 
 #[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, FromBytes)]
 #[repr(C, align(1))]
-pub struct EntryDarkSouls<O: ByteOrderExt> {
+pub struct FileEntryDs<O: ByteOrderExt> {
     pub path_hash: U32<O>,
     pub file_size: I32<O>,
     pub file_offset: U64<O>,
@@ -116,7 +113,7 @@ pub struct EntryDarkSouls<O: ByteOrderExt> {
 
 #[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, FromBytes)]
 #[repr(C, align(1))]
-pub struct EntryDarkSouls2<O: ByteOrderExt> {
+pub struct FileEntryDs2<O: ByteOrderExt> {
     pub path_hash: U32<O>,
     pub file_size: I32<O>,
     pub file_offset: U64<O>,
@@ -126,15 +123,15 @@ pub struct EntryDarkSouls2<O: ByteOrderExt> {
 
 #[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
 #[repr(C, align(1))]
-pub struct EntryDarkSouls3<O: ByteOrderExt> {
-    pub inner: EntryDarkSouls2<O>,
+pub struct FileEntryDs3<O: ByteOrderExt> {
+    pub inner: FileEntryDs2<O>,
     pub unpadded_file_size: I32<O>,
     unk24: ZeroU32<O>,
 }
 
 #[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, FromBytes)]
 #[repr(C, align(1))]
-pub struct EntryEldenRing<O: ByteOrderExt> {
+pub struct FileEntryEr<O: ByteOrderExt> {
     pub path_hash: U64<O>,
     pub file_size: I32<O>,
     pub unpadded_file_size: I32<O>,
@@ -179,7 +176,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
     }
 
     fn try_ref_encryption(&mut self, bytes: &'a [u8]) -> Result<(), TryRefFileError<O>> {
-        let total_len = self.entries.iter().map(Entries::len).sum();
+        let total_len = self.buckets.iter().map(Buckets::len).sum();
 
         self.encryption = vec![None; total_len];
 
@@ -187,7 +184,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
             return Ok(());
         }
 
-        macro_rules! try_ref_encryption_entries {
+        macro_rules! try_ref_encryption {
             ($self:ident, $inner:ident, $start_index:ident) => {
                 for (entry, encryption_out) in
                     $inner.iter().zip(&mut $self.encryption[$start_index..])
@@ -215,16 +212,16 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
             };
         }
 
-        for (entries, start_index) in self.entries.iter().scan(0, |sum, entries| {
+        for (buckets, start_index) in self.buckets.iter().scan(0, |sum, buckets| {
             let index = *sum;
-            *sum += entries.len();
-            Some((entries, index))
+            *sum += buckets.len();
+            Some((buckets, index))
         }) {
-            match entries {
-                Entries::DarkSouls2(inner) => try_ref_encryption_entries!(self, inner, start_index),
-                Entries::DarkSouls3(inner) => try_ref_encryption_entries!(self, inner, start_index),
-                Entries::EldenRing(inner) => try_ref_encryption_entries!(self, inner, start_index),
-                Entries::DarkSouls(_) => unreachable!("unexpected ds1 format"),
+            match buckets {
+                Buckets::DarkSouls2(entry) => try_ref_encryption!(self, entry, start_index),
+                Buckets::DarkSouls3(entry) => try_ref_encryption!(self, entry, start_index),
+                Buckets::EldenRing(entry) => try_ref_encryption!(self, entry, start_index),
+                Buckets::DarkSouls(_) => unreachable!("unexpected ds1 format"),
             }
         }
 
@@ -246,47 +243,50 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
     }
 
     fn try_ref_ds1(bytes: &'a [u8], header: &Header<O>) -> Result<Self, TryRefFileError<O>> {
-        let buckets =
-            try_ref_slice_helper::<Bucket<O>>(bytes, header.bucket_count(), header.bucket_offset())
-                .ok_or(TryRefFileError::Bucket)?;
-
-        let entries = buckets
-            .iter()
-            .map(|bucket| {
-                try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
-                    .map(Entries::DarkSouls)
-            })
-            .collect::<Option<Vec<_>>>()
-            .ok_or(TryRefFileError::Entry)?;
-
-        Ok(Self {
-            format: Format::DarkSouls,
-            entries,
-            encryption: vec![],
-            salt: None,
-        })
-    }
-
-    fn try_ref_dsr(bytes: &'a [u8], header: &Header<O>) -> Result<Self, TryRefFileError<O>> {
-        let buckets = try_ref_slice_helper::<BucketDSR<O>>(
+        let bucket_header = try_ref_slice_helper::<BucketHeader<O>>(
             bytes,
             header.bucket_count(),
             header.bucket_offset(),
         )
         .ok_or(TryRefFileError::Bucket)?;
 
-        let entries = buckets
+        let buckets = bucket_header
             .iter()
             .map(|bucket| {
                 try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
-                    .map(Entries::DarkSouls)
+                    .map(Buckets::DarkSouls)
             })
             .collect::<Option<Vec<_>>>()
-            .ok_or(TryRefFileError::Entry)?;
+            .ok_or(TryRefFileError::Bucket)?;
+
+        Ok(Self {
+            format: Format::DarkSouls,
+            buckets,
+            encryption: vec![],
+            salt: None,
+        })
+    }
+
+    fn try_ref_dsr(bytes: &'a [u8], header: &Header<O>) -> Result<Self, TryRefFileError<O>> {
+        let bucket_header = try_ref_slice_helper::<BucketHeaderDsr<O>>(
+            bytes,
+            header.bucket_count(),
+            header.bucket_offset(),
+        )
+        .ok_or(TryRefFileError::Bucket)?;
+
+        let buckets = bucket_header
+            .iter()
+            .map(|bucket| {
+                try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
+                    .map(Buckets::DarkSouls)
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or(TryRefFileError::Bucket)?;
 
         Ok(Self {
             format: Format::DarkSoulsRemastered,
-            entries,
+            buckets,
             encryption: vec![],
             salt: None,
         })
@@ -302,105 +302,74 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
             .checked_add(salt_len)
             .and_then(|end| bytes.get(salt_start..end));
 
-        let buckets =
-            try_ref_slice_helper::<Bucket<O>>(bytes, header.bucket_count(), header.bucket_offset())
-                .ok_or(TryRefFileError::Bucket)?;
+        let bucket_header = try_ref_slice_helper::<BucketHeader<O>>(
+            bytes,
+            header.bucket_count(),
+            header.bucket_offset(),
+        )
+        .ok_or(TryRefFileError::Bucket)?;
 
         let mut has_offset_0 = false;
-        let entries_ds3 = buckets
+        let buckets_ds3 = bucket_header
             .iter()
             .map(|bucket| {
                 try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
                     .filter(|entries| {
                         entries
                             .iter()
-                            .all(|entry| Self::is_valid_entry_ds3(entry, header, &mut has_offset_0))
+                            .all(|entry| FileEntryDs3::is_valid(entry, header, &mut has_offset_0))
                     })
-                    .map(Entries::DarkSouls3)
+                    .map(Buckets::DarkSouls3)
             })
             .collect::<Option<Vec<_>>>();
 
-        if let Some(entries) = entries_ds3 {
+        if let Some(buckets) = buckets_ds3 {
             return Ok(Self {
                 format: Format::DarkSouls3,
-                entries,
+                buckets,
                 encryption: vec![],
                 salt,
             });
         }
 
         let mut has_offset_0 = false;
-        let entries_ds2 = buckets
+        let buckets_ds2 = bucket_header
             .iter()
             .map(|bucket| {
                 try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
                     .filter(|entries| {
                         entries
                             .iter()
-                            .all(|entry| Self::is_valid_entry_ds2(entry, header, &mut has_offset_0))
+                            .all(|entry| FileEntryDs2::is_valid(entry, header, &mut has_offset_0))
                     })
-                    .map(Entries::DarkSouls2)
+                    .map(Buckets::DarkSouls2)
             })
             .collect::<Option<Vec<_>>>();
 
-        if let Some(entries) = entries_ds2 {
+        if let Some(buckets) = buckets_ds2 {
             return Ok(Self {
                 format: Format::DarkSouls2,
-                entries,
+                buckets,
                 encryption: vec![],
                 salt,
             });
         }
 
-        let entries = buckets
+        let buckets = bucket_header
             .iter()
             .map(|bucket| {
                 try_ref_slice_helper(bytes, bucket.entry_count.get(), bucket.entry_offset.get())
-                    .map(Entries::EldenRing)
+                    .map(Buckets::EldenRing)
             })
             .collect::<Option<Vec<_>>>()
-            .ok_or(TryRefFileError::Entry)?;
+            .ok_or(TryRefFileError::Bucket)?;
 
         Ok(Self {
             format: Format::EldenRing,
-            entries,
+            buckets,
             encryption: vec![],
             salt,
         })
-    }
-
-    fn is_valid_entry_ds2(
-        entry: &EntryDarkSouls2<O>,
-        header: &Header<O>,
-        has_offset_0: &mut bool,
-    ) -> bool {
-        let is_offset_0 = entry.file_offset == U64::ZERO;
-
-        if is_offset_0 && *has_offset_0 {
-            return false;
-        }
-
-        *has_offset_0 |= is_offset_0;
-
-        let header_size = header.file_size.get() as u64;
-
-        entry.file_size >= 0
-            && entry.encryption_offset < header_size
-            && entry.file_hash_offset < header_size
-    }
-
-    fn is_valid_entry_ds3(
-        entry: &EntryDarkSouls3<O>,
-        header: &Header<O>,
-        has_offset_0: &mut bool,
-    ) -> bool {
-        if !Self::is_valid_entry_ds2(entry, header, has_offset_0) {
-            return false;
-        }
-
-        let unpadded_file_size = entry.unpadded_file_size.get();
-
-        unpadded_file_size >= 0 && entry.file_size >= unpadded_file_size
     }
 }
 
@@ -454,7 +423,7 @@ impl<O: ByteOrderExt> Header<O> {
     }
 }
 
-impl<O: ByteOrderExt> Entries<'_, O> {
+impl<O: ByteOrderExt> Buckets<'_, O> {
     fn len(&self) -> usize {
         match self {
             Self::DarkSouls(inner) => inner.len(),
@@ -465,8 +434,38 @@ impl<O: ByteOrderExt> Entries<'_, O> {
     }
 }
 
-impl<O: ByteOrderExt> Deref for EntryDarkSouls3<O> {
-    type Target = EntryDarkSouls2<O>;
+impl<O: ByteOrderExt> FileEntryDs2<O> {
+    fn is_valid(&self, header: &Header<O>, has_offset_0: &mut bool) -> bool {
+        let is_offset_0 = self.file_offset == U64::ZERO;
+
+        if is_offset_0 && *has_offset_0 {
+            return false;
+        }
+
+        *has_offset_0 |= is_offset_0;
+
+        let header_size = header.file_size.get() as u64;
+
+        self.file_size >= 0
+            && self.encryption_offset < header_size
+            && self.file_hash_offset < header_size
+    }
+}
+
+impl<O: ByteOrderExt> FileEntryDs3<O> {
+    fn is_valid(&self, header: &Header<O>, has_offset_0: &mut bool) -> bool {
+        if !self.inner.is_valid(header, has_offset_0) {
+            return false;
+        }
+
+        let unpadded_file_size = self.unpadded_file_size.get();
+
+        unpadded_file_size >= 0 && self.file_size >= unpadded_file_size
+    }
+}
+
+impl<O: ByteOrderExt> Deref for FileEntryDs3<O> {
+    type Target = FileEntryDs2<O>;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
