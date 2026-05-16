@@ -418,12 +418,13 @@ impl FileEntryValidator {
         E: FileEntry,
     {
         let is_offset_0 = entry.file_offset() == 0;
-
-        if is_offset_0 && self.has_offset_0 {
-            return false;
-        }
+        let has_offset_0 = self.has_offset_0;
 
         self.has_offset_0 |= is_offset_0;
+
+        if is_offset_0 && has_offset_0 {
+            return false;
+        }
 
         entry.is_valid(header)
     }
@@ -539,18 +540,6 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryEr<O_> {
             && self.encryption_offset < header_size
             && self.file_hash_offset < header_size
     }
-}
-
-fn check_offset_0<O: ByteOrderExt>(file_offset: U64<O>, has_offset_0: &mut bool) -> bool {
-    let is_offset_0 = file_offset == U64::ZERO;
-
-    if is_offset_0 && *has_offset_0 {
-        return false;
-    }
-
-    *has_offset_0 |= is_offset_0;
-
-    true
 }
 
 #[cfg(test)]
