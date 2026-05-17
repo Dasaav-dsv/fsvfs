@@ -1,102 +1,76 @@
-const PRIME_32: u32 = 37;
-const PRIME_64: u64 = 133;
+use crate::dvdbnd::hash::mad::{mad_hash, mad_hash32, mad_hash64};
 
-const CHUNK_SIZE: usize = 8;
+mod mad;
 
-impl_mad_hash! {
-    pub fn mad_hash32<PRIME_32, CHUNK_SIZE>(bytes: &[u8]) -> u32;
-    pub fn mad_hash64<PRIME_64, CHUNK_SIZE>(bytes: &[u8]) -> u64;
+pub fn hash_path32(s: &str) -> Option<u32> {
+    let bytes = normalize_suffix_as_bytes(s)?;
+    let init = const { mad_hash32(0, b"/") };
+
+    Some(mad_hash::<4, _>(init, bytes))
 }
 
-// Big thanks to sfix and tremwil for the basis of this implementation.
-macro_rules! impl_mad_hash {
-    (
-        $(
-            $(#[$m:meta])*
-            $v:vis fn $f:ident<$p:ident, $n:ident>($b:ident: &[u8]) -> $t:ty;
-        )+
-    ) => {
-        $(
-            $(#[$m])*
-            $v fn $f($b: impl AsRef<[u8]>) -> $t {
-                const P: $t = $p as $t;
-                const N: usize = $n as usize;
-                const P_TO_N: $t = P.wrapping_pow(N as u32);
+pub fn hash_path64(s: &str) -> Option<u64> {
+    let bytes = normalize_suffix_as_bytes(s)?;
+    let init = const { mad_hash64(0, b"/") };
 
-                const POWERS: [$t; N] = {
-                    let mut powers = [0; N];
-                    let mut i = 0;
-                    while i < N {
-                        powers[i] = P.wrapping_pow((N - i) as u32 - 1);
-                        i += 1;
-                    }
-                    powers
-                };
+    Some(mad_hash::<4, _>(init, bytes))
+}
 
-                let mut hash: $t = 0;
-                let mut chunks = $b.as_ref().chunks_exact(N);
-
-                for chunk in chunks.by_ref() {
-                    let dot_product = (0..N).fold(0, |dot, i| {
-                        let val = (normalize(chunk[i]) as $t).wrapping_mul(POWERS[i]);
-                        <$t>::wrapping_add(dot, val)
-                    });
-
-                    hash = hash.wrapping_mul(P_TO_N).wrapping_add(dot_product);
-                }
-
-                for b in chunks.remainder() {
-                    hash = hash.wrapping_mul(P).wrapping_add(*b as $t);
-                }
-
-                hash
-            }
-        )+
+fn normalize_suffix_as_bytes(s: &str) -> Option<&[u8]> {
+    let without_root = match s.split_once(':') {
+        Some((_, s)) => s,
+        None => s,
     };
-}
 
-pub(self) use impl_mad_hash;
+    let bytes = without_root.as_bytes();
+    let (first, rest) = bytes.split_first()?;
 
-#[inline(always)]
-fn normalize(mut c: u8) -> u8 {
-    if c >= b'A' && c <= b'Z' {
-        c |= 32;
-    }
-
-    if c == b'\\' {
-        c = b'/';
-    }
-
-    c
+    (!rest.is_empty()).then(|| match *first {
+        b'/' | b'\\' => rest,
+        _ => bytes,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use crate::dvdbnd::hash::{hash_path32, hash_path64};
 
-    use crate::dvdbnd::hash::{PRIME_32, PRIME_64, mad_hash32, mad_hash64, normalize};
+    const PATH: &str = "/action/eventnameid.txt";
 
     #[test]
-    fn hash() {
-        let data5 = fs::read_to_string("dist/dvdbnd/Hash/DarkSouls3_PC/Data5.txt").unwrap();
-
-        for line in data5.lines() {
-            assert_eq!(mad_hash32(line), mad_hash32_naive(line), "{line}");
-            assert_eq!(mad_hash64(line), mad_hash64_naive(line), "{line}");
-        }
+    fn hash_eq() {
+        assert_eq_results(PATH, Some(0xec09d5de), Some(0x800c9074f004323e));
     }
 
-    fn mad_hash32_naive(bytes: impl AsRef<[u8]>) -> u32 {
-        bytes.as_ref().iter().fold(0, |hash, byte| {
-            hash.wrapping_mul(PRIME_32)
-                .wrapping_add(normalize(*byte) as u32)
-        })
+    #[test]
+    fn hash_invariant() {
+        assert_eq_hashes(PATH, "/action\\EventNameId.TXT");
+        assert_eq_hashes(PATH, "\\ACTION/EVENTNAMEID.txt");
     }
 
-    fn mad_hash64_naive(bytes: impl AsRef<[u8]>) -> u64 {
-        bytes.as_ref().iter().fold(0, |hash, byte| {
-            hash.wrapping_mul(PRIME_64)
-                .wrapping_add(normalize(*byte) as u64)
-        })
+    #[test]
+    fn hash_normalized() {
+        assert_eq_hashes(PATH, "/data3:\\action\\EventNameId.TXT");
+        assert_eq_hashes(PATH, "action/eventnameid.txt");
+    }
+
+    #[test]
+    fn hash_none() {
+        assert_eq_results("", None, None);
+        assert_eq_results("/data3:", None, None);
+        assert_eq_results("/data3:/", None, None);
+        assert_eq_results("/data3:\\", None, None);
+    }
+
+    #[track_caller]
+    fn assert_eq_results(s: &str, hash32: Option<u32>, hash64: Option<u64>) {
+        assert_eq!(hash_path32(s), hash32);
+        assert_eq!(hash_path64(s), hash64);
+    }
+
+    #[track_caller]
+    fn assert_eq_hashes(a: &str, b: &str) {
+        assert_eq!(hash_path32(a), hash_path32(a));
+        assert_eq!(hash_path64(b), hash_path64(b));
     }
 }
