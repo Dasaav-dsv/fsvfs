@@ -63,8 +63,8 @@ pub struct Header<O: ByteOrderExt> {
     /// 0 = big endian, 0xff = little endian.
     byte_order: Bom<O>,
 
-    /// 0 or 1.
-    unk05: bool,
+    /// 0 = no integrity hashes or encryption, 1 = integrity hashes or encryption may be present.
+    has_crypto: bool,
 
     /// Always zero, padding for `unk08`.
     unk06: Zero,
@@ -488,11 +488,16 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryDs2<O_> {
     }
 
     fn is_valid<O: ByteOrderExt>(&self, header: &Header<O>) -> bool {
-        let header_size = header.file_size.get() as u64;
+        if self.file_size < 0 {
+            return false;
+        }
 
-        self.file_size >= 0
-            && self.encryption_offset < header_size
-            && self.file_hash_offset < header_size
+        if header.has_crypto {
+            let header_size = header.file_size.get() as u64;
+            self.encryption_offset < header_size && self.file_hash_offset < header_size
+        } else {
+            self.encryption_offset == U64::ZERO && self.file_hash_offset == U64::ZERO
+        }
     }
 }
 
@@ -506,16 +511,19 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryDs3<O_> {
     }
 
     fn is_valid<O: ByteOrderExt>(&self, header: &Header<O>) -> bool {
-        let header_size = header.file_size.get() as u64;
-
         let file_size = self.file_size.get();
         let unpadded_file_size = self.unpadded_file_size.get();
 
-        file_size >= 0
-            && unpadded_file_size >= 0
-            && file_size >= unpadded_file_size
-            && self.encryption_offset < header_size
-            && self.file_hash_offset < header_size
+        if file_size < 0 || unpadded_file_size < 0 || file_size < unpadded_file_size {
+            return false;
+        }
+
+        if header.has_crypto {
+            let header_size = header.file_size.get() as u64;
+            self.encryption_offset < header_size && self.file_hash_offset < header_size
+        } else {
+            self.encryption_offset == U64::ZERO && self.file_hash_offset == U64::ZERO
+        }
     }
 }
 
@@ -529,16 +537,19 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryEr<O_> {
     }
 
     fn is_valid<O: ByteOrderExt>(&self, header: &Header<O>) -> bool {
-        let header_size = header.file_size.get() as u64;
-
         let file_size = self.file_size.get();
         let unpadded_file_size = self.unpadded_file_size.get();
 
-        file_size >= 0
-            && unpadded_file_size >= 0
-            && file_size >= unpadded_file_size
-            && self.encryption_offset < header_size
-            && self.file_hash_offset < header_size
+        if file_size < 0 || unpadded_file_size < 0 || file_size < unpadded_file_size {
+            return false;
+        }
+
+        if header.has_crypto {
+            let header_size = header.file_size.get() as u64;
+            self.encryption_offset < header_size && self.file_hash_offset < header_size
+        } else {
+            self.encryption_offset == U64::ZERO && self.file_hash_offset == U64::ZERO
+        }
     }
 }
 
