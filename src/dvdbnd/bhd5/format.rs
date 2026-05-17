@@ -201,7 +201,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
     ) -> Result<(Vec<Buckets<'a, O>>, Vec<Option<&'a Encryption<O>>>), TryRefFileError<O>>
     where
         B: BucketHeader + TryFromBytes + Immutable,
-        E: FileEntry + TryFromBytes + Immutable + 'a,
+        E: FileEntry<O> + TryFromBytes + Immutable + 'a,
     {
         let bucket_header =
             try_ref_slice_helper::<B>(bytes, header.bucket_count(), header.bucket_offset())
@@ -234,11 +234,15 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         let total_len = buckets.iter().map(Buckets::len).sum();
         let mut encryption = vec![None; total_len];
 
-        fn try_ref_encryption_chunk<'a, O: ByteOrderExt, E: FileEntry>(
+        fn try_ref_encryption_chunk<'a, O, E>(
             bytes: &'a [u8],
             entries: &[E],
             out: &mut [Option<&'a Encryption<O>>],
-        ) -> Result<(), TryRefFileError<O>> {
+        ) -> Result<(), TryRefFileError<O>>
+        where
+            O: ByteOrderExt,
+            E: FileEntry<O>,
+        {
             for (entry, out) in entries.iter().zip(out) {
                 let Some(encryption_offset) = entry.encryption_offset() else {
                     continue;
@@ -415,7 +419,7 @@ impl FileEntryValidator {
     pub fn is_valid<O, E>(&mut self, entry: &E, header: &Header<O>) -> bool
     where
         O: ByteOrderExt,
-        E: FileEntry,
+        E: FileEntry<O>,
     {
         let is_offset_0 = entry.file_offset() == 0;
         let has_offset_0 = self.has_offset_0;
@@ -436,12 +440,12 @@ trait BucketHeader {
     fn entry_offset(&self) -> impl TryInto<usize>;
 }
 
-trait FileEntry {
+trait FileEntry<O: ByteOrderExt> {
     fn file_offset(&self) -> u64;
 
     fn encryption_offset(&self) -> Option<NonZero<u64>>;
 
-    fn is_valid<O: ByteOrderExt>(&self, header: &Header<O>) -> bool;
+    fn is_valid(&self, header: &Header<O>) -> bool;
 }
 
 impl<O: ByteOrderExt> BucketHeader for BucketHeaderAll<O> {
@@ -464,7 +468,7 @@ impl<O: ByteOrderExt> BucketHeader for BucketHeaderDsr<O> {
     }
 }
 
-impl<O_: ByteOrderExt> FileEntry for FileEntryDs<O_> {
+impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs<O> {
     fn file_offset(&self) -> u64 {
         self.file_offset.get()
     }
@@ -473,12 +477,12 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryDs<O_> {
         None
     }
 
-    fn is_valid<O: ByteOrderExt>(&self, _header: &Header<O>) -> bool {
+    fn is_valid(&self, _header: &Header<O>) -> bool {
         self.file_size >= 0
     }
 }
 
-impl<O_: ByteOrderExt> FileEntry for FileEntryDs2<O_> {
+impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs2<O> {
     fn file_offset(&self) -> u64 {
         self.file_offset.get()
     }
@@ -487,7 +491,7 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryDs2<O_> {
         NonZero::new(self.encryption_offset.get())
     }
 
-    fn is_valid<O: ByteOrderExt>(&self, header: &Header<O>) -> bool {
+    fn is_valid(&self, header: &Header<O>) -> bool {
         if self.file_size < 0 {
             return false;
         }
@@ -501,7 +505,7 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryDs2<O_> {
     }
 }
 
-impl<O_: ByteOrderExt> FileEntry for FileEntryDs3<O_> {
+impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs3<O> {
     fn file_offset(&self) -> u64 {
         self.file_offset.get()
     }
@@ -510,7 +514,7 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryDs3<O_> {
         NonZero::new(self.encryption_offset.get())
     }
 
-    fn is_valid<O: ByteOrderExt>(&self, header: &Header<O>) -> bool {
+    fn is_valid(&self, header: &Header<O>) -> bool {
         let file_size = self.file_size.get();
         let unpadded_file_size = self.unpadded_file_size.get();
 
@@ -527,7 +531,7 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryDs3<O_> {
     }
 }
 
-impl<O_: ByteOrderExt> FileEntry for FileEntryEr<O_> {
+impl<O: ByteOrderExt> FileEntry<O> for FileEntryEr<O> {
     fn file_offset(&self) -> u64 {
         self.file_offset.get()
     }
@@ -536,7 +540,7 @@ impl<O_: ByteOrderExt> FileEntry for FileEntryEr<O_> {
         NonZero::new(self.encryption_offset.get())
     }
 
-    fn is_valid<O: ByteOrderExt>(&self, header: &Header<O>) -> bool {
+    fn is_valid(&self, header: &Header<O>) -> bool {
         let file_size = self.file_size.get();
         let unpadded_file_size = self.unpadded_file_size.get();
 
