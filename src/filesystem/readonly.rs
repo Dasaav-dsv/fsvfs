@@ -1,6 +1,7 @@
-use std::{collections::VecDeque, fmt, marker::PhantomData, mem, num::NonZero};
+use std::{borrow::Cow, collections::VecDeque, fmt, marker::PhantomData, mem, num::NonZero};
 
 use fxhash::FxHashMap;
+use smallvec::{SmallVec, smallvec_inline};
 
 use crate::filesystem::paths::Paths;
 
@@ -26,14 +27,16 @@ pub trait Config {
     const SEPARATORS: &[char] = &['/'];
 
     #[inline]
-    fn normalized_components(path: &str) -> Vec<String> {
-        let mut components = Vec::<String>::new();
+    fn normalized_components(path: &str) -> SmallVec<[Cow<'_, str>; 4]> {
+        let mut components = SmallVec::<[Cow<str>; _]>::new();
 
         for component in path.split(Self::SEPARATORS) {
             match component {
                 "" | "." => {}
                 ".." => {
-                    components.pop_if(|parent| parent != "..");
+                    if components.last().is_some_and(|parent| parent != "..") {
+                        components.pop();
+                    }
                 }
                 _ => {
                     components.push(Self::normalize_component(component));
@@ -45,8 +48,8 @@ pub trait Config {
     }
 
     #[inline]
-    fn normalize_component(component: &str) -> String {
-        component.to_string()
+    fn normalize_component(component: &str) -> Cow<'_, str> {
+        Cow::Borrowed(component)
     }
 }
 
@@ -132,7 +135,7 @@ impl<T, C: Config> Rofs<T, C> {
         let total = Self::inode_from(total);
 
         let mut nodes = Vec::<Node>::with_capacity(total as usize);
-        let mut paths = Vec::<(u32, String)>::with_capacity(total as usize);
+        let mut paths = Vec::<(u32, SmallVec<[&str; 1]>)>::with_capacity(total as usize);
 
         let mut inode = 0;
         let mut child_index = NonZero::<u32>::MIN;
@@ -155,9 +158,9 @@ impl<T, C: Config> Rofs<T, C> {
                         child_index = child_index.checked_add(child_count.get()).unwrap();
 
                         let path = match paths.get(parent_index).map(|(_, parent)| &**parent) {
-                            None => "/".to_string(),
-                            Some("/") => component.to_string(),
-                            Some(parent) => [parent, *component].join("/"),
+                            None => smallvec_inline!["/"],
+                            Some(&["/"]) => smallvec_inline![*component],
+                            Some(parent) => parent.iter().cloned().chain([*component]).collect(),
                         };
                         let parent_index = paths.len();
 
@@ -169,9 +172,9 @@ impl<T, C: Config> Rofs<T, C> {
                     TreeNode::Leaf(file_node) => {
                         nodes.push(Node::File(*file_node));
 
-                        let path = match paths[parent_index].1.as_str() {
-                            "/" => component.to_string(),
-                            parent => [parent, *component].join("/"),
+                        let path = match paths[parent_index].1.as_slice() {
+                            &["/"] => smallvec_inline![*component],
+                            parent => parent.iter().cloned().chain([*component]).collect(),
                         };
 
                         paths.push((inode, path));
@@ -180,6 +183,11 @@ impl<T, C: Config> Rofs<T, C> {
                 }
             }
         }
+
+        let paths = paths
+            .iter()
+            .map(|(i, p)| (*i, p.join("/")))
+            .collect::<Vec<_>>();
 
         let paths_iter = paths.iter().map(|(i, p)| (*i, p.as_str()));
 
