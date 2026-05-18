@@ -1,0 +1,124 @@
+use std::fmt;
+
+use fxhash::{FxBuildHasher, FxHashMap};
+
+pub struct Paths {
+    inner: RawPaths<'static>,
+}
+
+struct RawPaths<'a> {
+    pub inode_to_path: FxHashMap<u32, &'a str>,
+    pub path_to_inode: FxHashMap<&'a str, u32>,
+    str_store: *mut str,
+}
+
+impl Paths {
+    pub fn get_path(&self, inode: u32) -> Option<&str> {
+        self.reborrow().inode_to_path.get(&inode).cloned()
+    }
+
+    pub fn get_inode(&self, path: &str) -> Option<u32> {
+        self.reborrow().path_to_inode.get(&path).cloned()
+    }
+
+    fn reborrow<'a>(&'a self) -> &'a RawPaths<'a> {
+        &self.inner
+    }
+}
+
+impl<'a> FromIterator<(u32, &'a str)> for Paths {
+    fn from_iter<T: IntoIterator<Item = (u32, &'a str)>>(iter: T) -> Self {
+        let mut pos = 0;
+        let (kv, str_store) = iter
+            .into_iter()
+            .map(|(inode, path)| {
+                let start = pos;
+                pos += path.len();
+                ((inode, start..pos), path)
+            })
+            .unzip::<_, _, Vec<_>, String>();
+
+        let str_store = Box::into_raw(str_store.into_boxed_str());
+
+        let (mut inode_to_path, mut path_to_inode) = (
+            FxHashMap::with_capacity_and_hasher(kv.len(), FxBuildHasher::new()),
+            FxHashMap::with_capacity_and_hasher(kv.len(), FxBuildHasher::new()),
+        );
+
+        for (inode, str_range) in kv {
+            // SAFETY: materialized 'static references do not escape.
+            // `str_range` represents a valid UTF-8 range.
+            let path = inode_to_path
+                .entry(inode)
+                .or_insert_with(|| unsafe { (*str_store).get_unchecked(str_range) });
+
+            path_to_inode.insert(*path, inode);
+        }
+
+        Self {
+            inner: RawPaths {
+                inode_to_path,
+                path_to_inode,
+                str_store,
+            },
+        }
+    }
+}
+
+impl Drop for Paths {
+    fn drop(&mut self) {
+        // No other references can outlive self:
+        self.inner.inode_to_path = Default::default();
+        self.inner.path_to_inode = Default::default();
+
+        // SAFETY: all references to the underlying storage have been dropped.
+        unsafe {
+            let _ = Box::from_raw(self.inner.str_store);
+        }
+    }
+}
+
+impl fmt::Debug for Paths {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list()
+            .entries(self.reborrow().path_to_inode.iter())
+            .finish()
+    }
+}
+
+// SAFETY: we promise not to expose the fake 'static lifetime
+// or otherwise violate memory safety.
+unsafe impl Send for RawPaths<'_> {}
+
+// SAFETY: we promise not to expose the fake 'static lifetime
+// or otherwise violate memory safety.
+unsafe impl Sync for RawPaths<'_> {}
+
+#[cfg(test)]
+mod tests {
+    use crate::filesystem::paths::Paths;
+
+    #[test]
+    fn get_path() {
+        let paths = build_paths();
+
+        assert_eq!(paths.get_path(0), Some("a"));
+        assert_eq!(paths.get_path(1), Some("b"));
+        assert_eq!(paths.get_path(4), None);
+    }
+
+    #[test]
+    fn get_inode() {
+        let paths = build_paths();
+
+        assert_eq!(paths.get_inode("c"), Some(2));
+        assert_eq!(paths.get_inode("d"), Some(3));
+        assert_eq!(paths.get_inode("e"), None);
+    }
+
+    fn build_paths() -> Paths {
+        [(0, "a"), (1, "b"), (2, "c"), (3, "d")]
+            .into_iter()
+            .collect()
+    }
+}

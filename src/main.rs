@@ -7,6 +7,7 @@ use crate::cli::{Cli, Command};
 mod cli;
 mod crypto;
 mod dvdbnd;
+mod filesystem;
 #[cfg(windows)]
 mod winfsp;
 
