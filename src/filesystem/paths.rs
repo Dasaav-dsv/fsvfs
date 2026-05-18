@@ -7,18 +7,18 @@ pub struct Paths {
 }
 
 struct RawPaths<'a> {
-    pub inode_to_path: FxHashMap<u32, &'a str>,
-    pub path_to_inode: FxHashMap<&'a str, u32>,
+    paths_by_inode: FxHashMap<u32, &'a str>,
+    inodes_by_path: FxHashMap<&'a str, u32>,
     str_store: *mut str,
 }
 
 impl Paths {
-    pub fn get_path(&self, inode: u32) -> Option<&str> {
-        self.reborrow().inode_to_path.get(&inode).cloned()
+    pub fn path_by_inode(&self, inode: u32) -> Option<&str> {
+        self.reborrow().paths_by_inode.get(&inode).cloned()
     }
 
-    pub fn get_inode(&self, path: &str) -> Option<u32> {
-        self.reborrow().path_to_inode.get(&path).cloned()
+    pub fn inode_by_path(&self, path: &str) -> Option<u32> {
+        self.reborrow().inodes_by_path.get(&path).cloned()
     }
 
     fn reborrow<'a>(&'a self) -> &'a RawPaths<'a> {
@@ -57,8 +57,8 @@ impl<'a> FromIterator<(u32, &'a str)> for Paths {
 
         Self {
             inner: RawPaths {
-                inode_to_path,
-                path_to_inode,
+                paths_by_inode: inode_to_path,
+                inodes_by_path: path_to_inode,
                 str_store,
             },
         }
@@ -68,8 +68,8 @@ impl<'a> FromIterator<(u32, &'a str)> for Paths {
 impl Drop for Paths {
     fn drop(&mut self) {
         // No other references can outlive self:
-        self.inner.inode_to_path = Default::default();
-        self.inner.path_to_inode = Default::default();
+        self.inner.paths_by_inode = Default::default();
+        self.inner.inodes_by_path = Default::default();
 
         // SAFETY: all references to the underlying storage have been dropped.
         unsafe {
@@ -81,7 +81,7 @@ impl Drop for Paths {
 impl fmt::Debug for Paths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list()
-            .entries(self.reborrow().path_to_inode.iter())
+            .entries(self.reborrow().inodes_by_path.iter())
             .finish()
     }
 }
@@ -102,18 +102,18 @@ mod tests {
     fn get_path() {
         let paths = build_paths();
 
-        assert_eq!(paths.get_path(0), Some("a"));
-        assert_eq!(paths.get_path(1), Some("b"));
-        assert_eq!(paths.get_path(4), None);
+        assert_eq!(paths.path_by_inode(0), Some("a"));
+        assert_eq!(paths.path_by_inode(1), Some("b"));
+        assert_eq!(paths.path_by_inode(4), None);
     }
 
     #[test]
     fn get_inode() {
         let paths = build_paths();
 
-        assert_eq!(paths.get_inode("c"), Some(2));
-        assert_eq!(paths.get_inode("d"), Some(3));
-        assert_eq!(paths.get_inode("e"), None);
+        assert_eq!(paths.inode_by_path("c"), Some(2));
+        assert_eq!(paths.inode_by_path("d"), Some(3));
+        assert_eq!(paths.inode_by_path("e"), None);
     }
 
     fn build_paths() -> Paths {
