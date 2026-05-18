@@ -40,7 +40,7 @@ impl<'a> FromIterator<(u32, &'a str)> for Paths {
 
         let str_store = Box::into_raw(str_store.into_boxed_str());
 
-        let (mut inode_to_path, mut path_to_inode) = (
+        let (mut paths_by_inode, mut inodes_by_path) = (
             FxHashMap::with_capacity_and_hasher(kv.len(), FxBuildHasher::new()),
             FxHashMap::with_capacity_and_hasher(kv.len(), FxBuildHasher::new()),
         );
@@ -48,17 +48,20 @@ impl<'a> FromIterator<(u32, &'a str)> for Paths {
         for (inode, str_range) in kv {
             // SAFETY: materialized 'static references do not escape.
             // `str_range` represents a valid UTF-8 range.
-            let path = inode_to_path
+            let path = paths_by_inode
                 .entry(inode)
                 .or_insert_with(|| unsafe { (*str_store).get_unchecked(str_range) });
 
-            path_to_inode.insert(*path, inode);
+            inodes_by_path.insert(*path, inode);
         }
+
+        paths_by_inode.shrink_to_fit();
+        inodes_by_path.shrink_to_fit();
 
         Self {
             inner: RawPaths {
-                paths_by_inode: inode_to_path,
-                inodes_by_path: path_to_inode,
+                paths_by_inode,
+                inodes_by_path,
                 str_store,
             },
         }
