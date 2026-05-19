@@ -1,4 +1,6 @@
-use std::{collections::HashMap, fmt, ptr::NonNull};
+use std::{fmt, ptr::NonNull};
+
+use fxhash::FxHashMap;
 
 cfg_select! {
     feature = "rkyv" => {
@@ -6,8 +8,6 @@ cfg_select! {
         pub use rkyv::*;
     }
     _ => {
-        use fxhash::FxHashMap;
-
         pub struct Paths<'a> {
             inner: RawPaths<'a>,
         }
@@ -49,8 +49,8 @@ impl<'a> FromIterator<(u32, &'a str)> for Paths<'static> {
         let str_store = NonNull::new(Box::into_raw(str_store.into_boxed_str())).unwrap();
 
         let (mut paths_by_inode, mut inodes_by_path) = (
-            HashMap::with_capacity_and_hasher(kv.len(), Default::default()),
-            HashMap::with_capacity_and_hasher(kv.len(), Default::default()),
+            FxHashMap::with_capacity_and_hasher(kv.len(), Default::default()),
+            FxHashMap::with_capacity_and_hasher(kv.len(), Default::default()),
         );
 
         for (inode, str_range) in kv {

@@ -1,6 +1,7 @@
-use std::{collections::HashMap, hash::BuildHasherDefault, ptr::NonNull};
+use std::ptr::NonNull;
 
-use rkyv::{Archive, Serialize, hash::FxHasher64, with::Skip};
+use fxhash::FxHashMap;
+use rkyv::{Archive, Serialize, with::Skip};
 
 #[derive(Archive, Serialize)]
 pub struct Paths<'a> {
@@ -9,8 +10,8 @@ pub struct Paths<'a> {
 
 #[derive(Archive, Serialize)]
 pub(super) struct RawPaths<'a> {
-    pub(super) paths_by_inode: HashMap<u32, &'a str, BuildHasherDefault<FxHasher64>>,
-    pub(super) inodes_by_path: HashMap<&'a str, u32, BuildHasherDefault<FxHasher64>>,
+    pub(super) paths_by_inode: FxHashMap<u32, &'a str>,
+    pub(super) inodes_by_path: FxHashMap<&'a str, u32>,
 
     #[rkyv(with = Skip)]
     pub(super) str_store: Option<NonNull<str>>,
