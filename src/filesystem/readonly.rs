@@ -11,10 +11,11 @@ pub struct RofsBuilder<'a, T> {
 }
 
 #[derive(Debug)]
-pub struct Rofs<T, C: Config = DefaultConfig> {
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
+pub struct Rofs<'a, T, C: Config = DefaultConfig> {
     nodes: Box<[Node]>,
     files: Box<[T]>,
-    paths: Paths,
+    paths: Paths<'a>,
     _config: PhantomData<C>,
 }
 
@@ -54,6 +55,7 @@ pub trait Config {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
 enum Node {
     Dir {
         child_index: NonZero<u32>,
@@ -63,6 +65,7 @@ enum Node {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
 struct FileNode {
     data_index: u32,
 }
@@ -80,13 +83,13 @@ impl<'a, T> RofsBuilder<'a, T> {
         self
     }
 
-    pub fn finish<C: Config>(&mut self) -> Rofs<T, C> {
+    pub fn finish<C: Config>(&mut self) -> Rofs<'static, T, C> {
         Rofs::new(mem::take(&mut self.files))
     }
 }
 
-impl<T, C: Config> Rofs<T, C> {
-    fn new(files: Vec<(&str, T)>) -> Self {
+impl<T, C: Config> Rofs<'_, T, C> {
+    fn new(files: Vec<(&str, T)>) -> Rofs<'static, T, C> {
         let _ = Self::inode_from(files.len());
 
         let (components, files) = files
@@ -191,7 +194,7 @@ impl<T, C: Config> Rofs<T, C> {
 
         let paths_iter = paths.iter().map(|(i, p)| (*i, p.as_str()));
 
-        Self {
+        Rofs {
             nodes: nodes.into_boxed_slice(),
             files: files.into_boxed_slice(),
             paths: Paths::from_iter(paths_iter),
@@ -212,7 +215,7 @@ impl<T, C: Config> Rofs<T, C> {
             return n;
         }
 
-        panic!("inode conversion failed: input ({n}) is larger than `u32::MAX`!");
+        panic!("inode conversion failed: input ({n}) does not fit in a u32!");
     }
 }
 

@@ -17,6 +17,7 @@ malachite = { version = "0.9.1", default-features = false, features = [
     "std",
 ] }
 memmap2 = "0.9.10"
+rkyv = { version = "0.8.16", optional = true }
 smallvec = { version = "1.15.1", features = [
     "const_generics",
     "union",
@@ -42,6 +43,9 @@ winfsp = { version = "0.12.4", default-features = false, features = [
     "build",
     "delayload",
 ] }
+
+[features]
+default = []
 
 [dev-dependencies]
 steamlocate = "2.1.0"

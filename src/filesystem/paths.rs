@@ -1,18 +1,26 @@
-use std::fmt;
+use std::{collections::HashMap, fmt, ptr::NonNull};
 
-use fxhash::{FxBuildHasher, FxHashMap};
+cfg_select! {
+    feature = "rkyv" => {
+        mod rkyv;
+        pub use rkyv::*;
+    }
+    _ => {
+        use fxhash::FxHashMap;
 
-pub struct Paths {
-    inner: RawPaths<'static>,
+        pub struct Paths<'a> {
+            inner: RawPaths<'a>,
+        }
+
+        struct RawPaths<'a> {
+            paths_by_inode: FxHashMap<u32, &'a str>,
+            inodes_by_path: FxHashMap<&'a str, u32>,
+            str_store: Option<NonNull<str>>,
+        }
+    }
 }
 
-struct RawPaths<'a> {
-    paths_by_inode: FxHashMap<u32, &'a str>,
-    inodes_by_path: FxHashMap<&'a str, u32>,
-    str_store: *mut str,
-}
-
-impl Paths {
+impl Paths<'_> {
     pub fn path_by_inode(&self, inode: u32) -> Option<&str> {
         self.reborrow().paths_by_inode.get(&inode).cloned()
     }
@@ -26,7 +34,7 @@ impl Paths {
     }
 }
 
-impl<'a> FromIterator<(u32, &'a str)> for Paths {
+impl<'a> FromIterator<(u32, &'a str)> for Paths<'static> {
     fn from_iter<T: IntoIterator<Item = (u32, &'a str)>>(iter: T) -> Self {
         let mut pos = 0;
         let (kv, str_store) = iter
@@ -38,11 +46,11 @@ impl<'a> FromIterator<(u32, &'a str)> for Paths {
             })
             .unzip::<_, _, Vec<_>, String>();
 
-        let str_store = Box::into_raw(str_store.into_boxed_str());
+        let str_store = NonNull::new(Box::into_raw(str_store.into_boxed_str())).unwrap();
 
         let (mut paths_by_inode, mut inodes_by_path) = (
-            FxHashMap::with_capacity_and_hasher(kv.len(), FxBuildHasher::new()),
-            FxHashMap::with_capacity_and_hasher(kv.len(), FxBuildHasher::new()),
+            HashMap::with_capacity_and_hasher(kv.len(), Default::default()),
+            HashMap::with_capacity_and_hasher(kv.len(), Default::default()),
         );
 
         for (inode, str_range) in kv {
@@ -50,7 +58,7 @@ impl<'a> FromIterator<(u32, &'a str)> for Paths {
             // `str_range` represents a valid UTF-8 range.
             let path = paths_by_inode
                 .entry(inode)
-                .or_insert_with(|| unsafe { (*str_store).get_unchecked(str_range) });
+                .or_insert_with(|| unsafe { str_store.as_ref().get_unchecked(str_range) });
 
             inodes_by_path.insert(*path, inode);
         }
@@ -62,26 +70,28 @@ impl<'a> FromIterator<(u32, &'a str)> for Paths {
             inner: RawPaths {
                 paths_by_inode,
                 inodes_by_path,
-                str_store,
+                str_store: Some(str_store),
             },
         }
     }
 }
 
-impl Drop for Paths {
+impl Drop for Paths<'_> {
     fn drop(&mut self) {
         // No other references can outlive self:
         self.inner.paths_by_inode = Default::default();
         self.inner.inodes_by_path = Default::default();
 
-        // SAFETY: all references to the underlying storage have been dropped.
-        unsafe {
-            let _ = Box::from_raw(self.inner.str_store);
+        if let Some(str_store) = self.inner.str_store.take() {
+            // SAFETY: all references to the underlying storage have been dropped.
+            unsafe {
+                let _ = Box::from_raw(str_store.as_ptr());
+            }
         }
     }
 }
 
-impl fmt::Debug for Paths {
+impl fmt::Debug for Paths<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list()
             .entries(self.reborrow().inodes_by_path.iter())
@@ -119,7 +129,7 @@ mod tests {
         assert_eq!(paths.inode_by_path("e"), None);
     }
 
-    fn build_paths() -> Paths {
+    fn build_paths() -> Paths<'static> {
         [(0, "a"), (1, "b"), (2, "c"), (3, "d")]
             .into_iter()
             .collect()
