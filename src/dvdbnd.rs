@@ -16,7 +16,6 @@ use crate::{
 
 mod bhd5;
 mod dict;
-mod hash;
 mod keys;
 mod path;
 

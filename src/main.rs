@@ -8,6 +8,7 @@ mod cli;
 mod crypto;
 mod dvdbnd;
 mod filesystem;
+mod hash;
 #[cfg(windows)]
 mod winfsp;
 

@@ -122,7 +122,7 @@ impl_muladd! { u32, u64 }
 mod tests {
     use std::fs;
 
-    use crate::dvdbnd::hash::mad::{mad_hash, mad_hash32, mad_hash64};
+    use crate::hash::mad::{mad_hash, mad_hash32, mad_hash64};
 
     #[test]
     fn hash() {

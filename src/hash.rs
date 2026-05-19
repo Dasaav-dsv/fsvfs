@@ -1,4 +1,4 @@
-use crate::dvdbnd::hash::mad::{mad_hash, mad_hash32, mad_hash64};
+use crate::hash::mad::{mad_hash, mad_hash32, mad_hash64};
 
 mod mad;
 
@@ -33,7 +33,7 @@ fn normalize_suffix_as_bytes(s: &str) -> Option<&[u8]> {
 
 #[cfg(test)]
 mod tests {
-    use crate::dvdbnd::hash::{hash_path32, hash_path64};
+    use crate::hash::{hash_path32, hash_path64};
 
     const PATH: &str = "/action/eventnameid.txt";
 
