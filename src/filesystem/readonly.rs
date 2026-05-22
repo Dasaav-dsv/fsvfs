@@ -56,26 +56,25 @@ impl Config for DefaultConfig {}
 
 pub trait ReadOnlyFilesystem {
     type File;
-    type Error: std::error::Error;
 
-    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, Self::Error>;
+    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError>;
 
     fn get_iter<R>(
         &self,
         range: R,
-    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, Self::Error>
+    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
     where
         R: RangeBounds<u32>;
 
-    fn path(&self, inode: u32) -> Result<&str, Self::Error>;
+    fn path(&self, inode: u32) -> Result<&str, RofsError>;
 
-    fn lookup(&self, path: &str) -> Result<u32, Self::Error>;
+    fn lookup(&self, path: &str) -> Result<u32, RofsError>;
 
-    fn is_dir(&self, inode: u32) -> Result<bool, Self::Error> {
+    fn is_dir(&self, inode: u32) -> Result<bool, RofsError> {
         Ok(matches!(self.get(inode)?, Entry::Dir(_)))
     }
 
-    fn is_file(&self, inode: u32) -> Result<bool, Self::Error> {
+    fn is_file(&self, inode: u32) -> Result<bool, RofsError> {
         Ok(matches!(self.get(inode)?, Entry::File(_)))
     }
 }
@@ -279,10 +278,9 @@ where
 
 impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     type File = T;
-    type Error = RofsError;
 
     #[inline]
-    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, Self::Error> {
+    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError> {
         let index = usize::try_from(inode).expect("index too large");
         let node = self.nodes.get(index).ok_or(RofsError::NotFound)?;
         Ok(self.node_to_entry(node))
@@ -292,7 +290,7 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     fn get_iter<R>(
         &self,
         range: R,
-    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, Self::Error>
+    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
     where
         R: RangeBounds<u32>,
     {
@@ -302,12 +300,12 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     }
 
     #[inline]
-    fn path(&self, inode: u32) -> Result<&str, Self::Error> {
+    fn path(&self, inode: u32) -> Result<&str, RofsError> {
         self.paths.path_by_inode(inode).ok_or(RofsError::NotFound)
     }
 
     #[inline]
-    fn lookup(&self, path: &str) -> Result<u32, Self::Error> {
+    fn lookup(&self, path: &str) -> Result<u32, RofsError> {
         let path = normalize_path::<C>(path);
         self.paths.inode_by_path(&path).ok_or(RofsError::NotFound)
     }
@@ -319,10 +317,9 @@ where
     T: rkyv::Archive,
 {
     type File = T::Archived;
-    type Error = RofsError;
 
     #[inline]
-    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, Self::Error> {
+    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError> {
         let index = usize::try_from(inode).expect("index too large");
         let node = (*self.nodes).get(index).ok_or(RofsError::NotFound)?;
         Ok(self.node_to_entry(node))
@@ -332,7 +329,7 @@ where
     fn get_iter<R>(
         &self,
         range: R,
-    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, Self::Error>
+    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
     where
         R: RangeBounds<u32>,
     {
@@ -342,12 +339,12 @@ where
     }
 
     #[inline]
-    fn path(&self, inode: u32) -> Result<&str, Self::Error> {
+    fn path(&self, inode: u32) -> Result<&str, RofsError> {
         self.paths.path_by_inode(inode).ok_or(RofsError::NotFound)
     }
 
     #[inline]
-    fn lookup(&self, path: &str) -> Result<u32, Self::Error> {
+    fn lookup(&self, path: &str) -> Result<u32, RofsError> {
         let path = normalize_path::<C>(path);
         self.paths.inode_by_path(&path).ok_or(RofsError::NotFound)
     }

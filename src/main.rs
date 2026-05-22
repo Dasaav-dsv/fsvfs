@@ -9,6 +9,7 @@ mod crypto;
 mod dvdbnd;
 mod filesystem;
 mod hash;
+mod unaligned;
 #[cfg(windows)]
 mod winfsp;
 
