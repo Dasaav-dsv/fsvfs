@@ -5,6 +5,8 @@ mod consts;
 pub mod format;
 mod magic;
 
+pub use byte_order::ByteOrderExt;
+
 pub fn has_bhd_extension<P: AsRef<Path>>(path: P) -> bool {
     path.as_ref()
         .extension()

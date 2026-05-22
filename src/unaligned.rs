@@ -37,7 +37,7 @@ macro_rules! impl_ints {
             $vis_outer struct $ty($vis_inner [u8; $b]);
             impl $ty {
                 #[inline]
-                const fn new(value: $as) -> Self {
+                pub const fn new(value: $as) -> Self {
                     let src = value.to_ne_bytes();
                     let (first, last) = cfg_select! {
                         target_endian = "big" => (size_of::<$as>() - $b, size_of::<$as>()),
@@ -52,7 +52,7 @@ macro_rules! impl_ints {
                     Self(bytes)
                 }
                 #[inline]
-                const fn get(self) -> $as {
+                pub const fn get(self) -> $as {
                     let src = self.0;
                     let (first, last) = cfg_select! {
                         target_endian = "big" => (size_of::<$as>() - $b, size_of::<$as>()),

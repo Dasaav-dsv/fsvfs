@@ -18,6 +18,7 @@ mod bhd5;
 mod dict;
 mod filesystem;
 mod keys;
+mod mount;
 mod path;
 
 #[instrument(skip(archives), err)]
