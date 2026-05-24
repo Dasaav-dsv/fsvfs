@@ -21,8 +21,9 @@ pub enum RofsError {
 }
 
 #[derive(Debug)]
-pub struct RofsBuilder<'a, T> {
+pub struct RofsBuilder<'a, 'b, T> {
     files: Vec<(&'a str, T)>,
+    hard_links: Vec<(&'b str, &'a str)>,
 }
 
 #[derive(Debug)]
@@ -95,9 +96,12 @@ struct FileNode {
     data_index: u32,
 }
 
-impl<'a, T> RofsBuilder<'a, T> {
+impl<'a, 'b, T> RofsBuilder<'a, 'b, T> {
     pub const fn new() -> Self {
-        Self { files: Vec::new() }
+        Self {
+            files: Vec::new(),
+            hard_links: Vec::new(),
+        }
     }
 
     pub fn with_files<I>(&mut self, iter: I) -> &mut Self
@@ -105,6 +109,14 @@ impl<'a, T> RofsBuilder<'a, T> {
         I: IntoIterator<Item = (&'a str, T)>,
     {
         self.files.extend(iter);
+        self
+    }
+
+    pub fn with_hard_links<I>(&mut self, iter: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (&'b str, &'a str)>,
+    {
+        self.hard_links.extend(iter);
         self
     }
 
@@ -400,7 +412,7 @@ where
     (start, end)
 }
 
-impl<C: Config> Default for RofsBuilder<'_, C> {
+impl<C: Config> Default for RofsBuilder<'_, '_, C> {
     fn default() -> Self {
         Self::new()
     }

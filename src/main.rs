@@ -5,6 +5,7 @@ use tracing::{debug, instrument};
 use crate::cli::{Cli, Command};
 
 mod cli;
+mod cow;
 mod crypto;
 mod dvdbnd;
 mod filesystem;

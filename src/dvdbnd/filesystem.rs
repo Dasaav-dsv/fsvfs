@@ -1,8 +1,12 @@
 use std::{borrow::Cow, num::NonZero};
 
+use fxhash::{FxBuildHasher, FxHashMap};
+
 use crate::{
+    cow::CowExt,
     dvdbnd::{
         bhd5::{ByteOrderExt, format::File as Bhd5File},
+        dict::Dictionary,
         filesystem::encryption::EncryptionStore,
     },
     filesystem::readonly::{Config, ReadOnlyFilesystem, Rofs},
@@ -36,6 +40,12 @@ pub struct BndRofs {
 }
 
 #[derive(Debug)]
+pub struct BndRofsBuilder<'a, 'b, 'c, O: ByteOrderExt> {
+    bhds: FxHashMap<&'a str, Bhd5File<'b, O>>,
+    dict: Option<&'c Dictionary>,
+}
+
+#[derive(Debug)]
 struct BndConfig;
 
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
@@ -48,9 +58,35 @@ struct File {
     encryption_index: Option<NonZero<u32>>,
 }
 
-impl BndRofs {
-    pub fn new<O: ByteOrderExt>(headers: &[&Bhd5File<O>], dict: ()) -> Self {
+impl<'a, 'b, 'c, O: ByteOrderExt> BndRofsBuilder<'a, 'b, 'c, O> {
+    pub const fn new() -> Self {
+        Self {
+            bhds: FxHashMap::with_hasher(FxBuildHasher::new()),
+            dict: None,
+        }
+    }
+
+    pub fn with_dict(&mut self, dict: Option<&'c Dictionary>) -> &mut Self {
+        self.dict = dict;
+        self
+    }
+
+    pub fn with_bhds<I>(&mut self, iter: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (&'a str, Bhd5File<'b, O>)>,
+    {
+        self.bhds.extend(iter);
+        self
+    }
+
+    pub fn finish(&mut self) -> BndRofs {
         todo!()
+    }
+}
+
+impl<O: ByteOrderExt> Default for BndRofsBuilder<'_, '_, '_, O> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -140,14 +176,8 @@ impl Config for BndConfig {
     const SEPARATORS: &[char] = &['/', '\\'];
 
     fn normalize_component(component: &str) -> Cow<'_, str> {
-        if component.as_bytes().chunks(8).any(|chunk| {
-            chunk
-                .iter()
-                .fold(false, |is, byte| is | byte.is_ascii_uppercase())
-        }) {
-            Cow::Owned(component.to_ascii_lowercase())
-        } else {
-            Cow::Borrowed(component)
-        }
+        let mut component = Cow::Borrowed(component);
+        Cow::make_ascii_lowercase(&mut component);
+        component
     }
 }

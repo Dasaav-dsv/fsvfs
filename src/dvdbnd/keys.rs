@@ -31,7 +31,7 @@ pub struct Keys<'a> {
     pub by_path: FxHashMap<&'a BhdPath, Option<RsaKey>>,
 }
 
-type PemPathMap = Vec<(Box<str>, SmallVec<[(Box<str>, Box<Path>); 1]>)>;
+type PemPathMap = Vec<(String, SmallVec<[(String, Box<Path>); 1]>)>;
 
 impl<'a, 'k> KeyProvider<'a, 'k> {
     pub fn new(archives: &'a ArchivePaths, keys_dir: &'k Path) -> Self {
@@ -93,7 +93,10 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
                 .map(|i| slice::from_ref(&pem_paths[i]))
                 .unwrap_or_else(|| pem_paths.as_slice())
             {
-                for (_, pem_path) in pem_paths.iter().filter(|(pem_name, _)| pem_name == name) {
+                for (_, pem_path) in pem_paths
+                    .iter()
+                    .filter(|(pem_name, _)| &**pem_name == &**name)
+                {
                     let key = match cache.get(&**pem_path) {
                         Some(key) => key,
                         None => {

@@ -33,7 +33,10 @@ pub fn mount(
 
     let keys = KeyProvider::new(&archives, keys_dir).into_keys_for_game(game)?;
 
-    let dict = Dictionary::from_dir_and_game(dict_dir, game)?;
+    let dict = match keys.game.as_deref() {
+        Some(game) => Some(Dictionary::from_dir_and_game(dict_dir, game)?),
+        None => None,
+    };
 
     Ok(())
 }
@@ -92,20 +95,18 @@ fn recursive_read_files(
     }))
 }
 
-fn prefix_and_parent_to_lowercase(path: &Path) -> (Box<str>, Box<str>) {
+fn prefix_and_parent_to_lowercase(path: &Path) -> (String, String) {
     let prefix = path
         .file_prefix()
         .and_then(OsStr::to_str)
         .unwrap_or_default();
+
     let parent = path
         .parent()
         .and_then(|parent| parent.file_name()?.to_str())
         .unwrap_or_default();
 
-    (
-        prefix.to_ascii_lowercase().into_boxed_str(),
-        parent.to_ascii_lowercase().into_boxed_str(),
-    )
+    (prefix.to_ascii_lowercase(), parent.to_ascii_lowercase())
 }
 
 #[cfg(test)]
