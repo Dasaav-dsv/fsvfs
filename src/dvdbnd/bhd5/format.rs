@@ -23,7 +23,7 @@ pub enum Format {
 #[derive(Clone, Debug)]
 pub struct File<'a, O: ByteOrderExt> {
     pub format: Format,
-    pub buckets: Vec<Buckets<'a, O>>,
+    pub buckets: Buckets<'a, O>,
     pub encryption: Vec<Option<&'a Encryption<O>>>,
     pub salt: Option<&'a [u8]>,
 }
@@ -40,12 +40,12 @@ pub enum TryRefFileError<O: ByteOrderExt> {
     Encryption,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Buckets<'a, O: ByteOrderExt> {
-    DarkSouls(&'a [FileEntryDs<O>]),
-    DarkSouls2(&'a [FileEntryDs2<O>]),
-    DarkSouls3(&'a [FileEntryDs3<O>]),
-    EldenRing(&'a [FileEntryEr<O>]),
+    DarkSouls(Vec<&'a [FileEntryDs<O>]>),
+    DarkSouls2(Vec<&'a [FileEntryDs2<O>]>),
+    DarkSouls3(Vec<&'a [FileEntryDs3<O>]>),
+    EldenRing(Vec<&'a [FileEntryEr<O>]>),
 }
 
 pub const BHD5_HEADER_LEN: usize = {
@@ -197,8 +197,8 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
     fn try_ref_buckets<B, E>(
         bytes: &'a [u8],
         header: &Header<O>,
-        f: impl Fn(&'a [E]) -> Buckets<'a, O>,
-    ) -> Result<(Vec<Buckets<'a, O>>, Vec<Option<&'a Encryption<O>>>), TryRefFileError<O>>
+        f: impl Fn(Vec<&'a [E]>) -> Buckets<'a, O>,
+    ) -> Result<(Buckets<'a, O>, Vec<Option<&'a Encryption<O>>>), TryRefFileError<O>>
     where
         B: BucketHeader + TryFromBytes + Immutable,
         E: FileEntry<O> + TryFromBytes + Immutable + 'a,
@@ -211,15 +211,16 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         let buckets = bucket_header
             .iter()
             .map(|bucket| {
-                try_ref_slice_helper(bytes, bucket.entry_count(), bucket.entry_offset())
-                    .filter(|entries| {
+                try_ref_slice_helper(bytes, bucket.entry_count(), bucket.entry_offset()).filter(
+                    |entries| {
                         entries
                             .iter()
                             .all(|entry| validator.is_valid(entry, header))
-                    })
-                    .map(&f)
+                    },
+                )
             })
             .collect::<Option<Vec<_>>>()
+            .map(f)
             .ok_or(TryRefFileError::Bucket)?;
 
         let encryption = Self::try_ref_encryption(bytes, &buckets)?;
@@ -229,59 +230,49 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
 
     fn try_ref_encryption(
         bytes: &'a [u8],
-        buckets: &[Buckets<'a, O>],
+        buckets: &Buckets<'a, O>,
     ) -> Result<Vec<Option<&'a Encryption<O>>>, TryRefFileError<O>> {
-        let total_len = buckets.iter().map(Buckets::len).sum();
-        let mut encryption = vec![None; total_len];
-
-        fn try_ref_encryption_chunk<'a, O, E>(
+        fn try_ref_encryption_inner<'a, O, E>(
             bytes: &'a [u8],
-            entries: &[E],
-            out: &mut [Option<&'a Encryption<O>>],
-        ) -> Result<(), TryRefFileError<O>>
+            entries: &[&[E]],
+        ) -> Result<Vec<Option<&'a Encryption<O>>>, TryRefFileError<O>>
         where
             O: ByteOrderExt,
             E: FileEntry<O>,
         {
-            for (entry, out) in entries.iter().zip(out) {
-                let Some(encryption_offset) = entry.encryption_offset() else {
-                    continue;
-                };
+            entries
+                .iter()
+                .flat_map(|e| *e)
+                .map(|entry| {
+                    let Some(encryption_offset) = entry.encryption_offset() else {
+                        return Ok(None);
+                    };
 
-                let offset = usize::try_from(encryption_offset.get())
-                    .map_err(|_| TryRefFileError::Encryption)?;
+                    let offset = usize::try_from(encryption_offset.get())
+                        .map_err(|_| TryRefFileError::Encryption)?;
 
-                let bytes = bytes.get(offset..).ok_or(TryRefFileError::Encryption)?;
-                let (encryption, _) = Encryption::<O>::ref_from_prefix_with_elems(bytes, 0)
-                    .map_err(|_| TryRefFileError::Encryption)?;
+                    let bytes = bytes.get(offset..).ok_or(TryRefFileError::Encryption)?;
+                    let (encryption, _) = Encryption::<O>::ref_from_prefix_with_elems(bytes, 0)
+                        .map_err(|_| TryRefFileError::Encryption)?;
 
-                let n_ranges = usize::try_from(encryption.range_count.get())
-                    .map_err(|_| TryRefFileError::Encryption)?;
+                    let n_ranges = usize::try_from(encryption.range_count.get())
+                        .map_err(|_| TryRefFileError::Encryption)?;
 
-                let (encryption, _) = Encryption::<O>::ref_from_prefix_with_elems(bytes, n_ranges)
-                    .map_err(|_| TryRefFileError::Encryption)?;
+                    let (encryption, _) =
+                        Encryption::<O>::ref_from_prefix_with_elems(bytes, n_ranges)
+                            .map_err(|_| TryRefFileError::Encryption)?;
 
-                *out = Some(encryption);
-            }
-
-            Ok(())
+                    Ok(Some(encryption))
+                })
+                .collect()
         }
 
-        for (buckets, start_index) in buckets.iter().scan(0, |sum, buckets| {
-            let index = *sum;
-            *sum += buckets.len();
-            Some((buckets, index))
-        }) {
-            let chunk = &mut encryption[start_index..];
-            match buckets {
-                Buckets::DarkSouls(_) => continue,
-                Buckets::DarkSouls2(entries) => try_ref_encryption_chunk(bytes, entries, chunk)?,
-                Buckets::DarkSouls3(entries) => try_ref_encryption_chunk(bytes, entries, chunk)?,
-                Buckets::EldenRing(entries) => try_ref_encryption_chunk(bytes, entries, chunk)?,
-            }
+        match buckets {
+            Buckets::DarkSouls(entries) => Ok(vec![None; entries.iter().map(|e| e.len()).sum()]),
+            Buckets::DarkSouls2(entries) => try_ref_encryption_inner(bytes, entries),
+            Buckets::DarkSouls3(entries) => try_ref_encryption_inner(bytes, entries),
+            Buckets::EldenRing(entries) => try_ref_encryption_inner(bytes, entries),
         }
-
-        Ok(encryption)
     }
 
     fn try_ref_ds1(bytes: &'a [u8], header: &Header<O>) -> Result<Self, TryRefFileError<O>> {
@@ -401,17 +392,6 @@ impl<O: ByteOrderExt> Header<O> {
 
         ((Self::SALT_OFFSET as u32).checked_add(salt_len)? <= bucket_offset)
             .then_some(salt_len as usize)
-    }
-}
-
-impl<O: ByteOrderExt> Buckets<'_, O> {
-    fn len(&self) -> usize {
-        match self {
-            Self::DarkSouls(inner) => inner.len(),
-            Self::DarkSouls2(inner) => inner.len(),
-            Self::DarkSouls3(inner) => inner.len(),
-            Self::EldenRing(inner) => inner.len(),
-        }
     }
 }
 
