@@ -1,11 +1,13 @@
-impl_ints! {
+use std::num::TryFromIntError;
+
+impl_uints! {
     pub U16(pub [u8; 2]) as u16;
     pub U24(pub [u8; 3]) as u32;
     pub U32(pub [u8; 4]) as u32;
     pub U64(pub [u8; 8]) as u64;
 }
 
-macro_rules! impl_ints {
+macro_rules! impl_uints {
     ($(
         $vis_outer:vis $ty:ident($vis_inner:vis [u8; $b:literal]) as $as:ty;
     )+) => {
@@ -31,11 +33,13 @@ macro_rules! impl_ints {
                 zerocopy::Immutable,
                 zerocopy::Unaligned,
                 zerocopy::KnownLayout,
+                zerocopy::IntoBytes,
                 zerocopy::FromBytes,
             )]
             #[repr(transparent)]
             $vis_outer struct $ty($vis_inner [u8; $b]);
             impl $ty {
+                pub const MAX: Self = Self::new(<$as>::MAX);
                 #[inline]
                 pub const fn new(value: $as) -> Self {
                     let src = value.to_ne_bytes();
@@ -67,10 +71,15 @@ macro_rules! impl_ints {
                     <$as>::from_ne_bytes(bytes)
                 }
             }
-            impl From<$as> for $ty {
+            impl TryFrom<$as> for $ty {
+                type Error = TryFromIntError;
                 #[inline]
-                fn from(value: $as) -> Self {
-                    Self::new(value)
+                fn try_from(value: $as) -> Result<Self, Self::Error> {
+                    if value <= const { Self::MAX.get() } {
+                        Ok(Self::new(value))
+                    } else {
+                        Err(u8::try_from(u16::MAX).unwrap_err())
+                    }
                 }
             }
             impl From<$ty> for $as {
@@ -83,4 +92,4 @@ macro_rules! impl_ints {
     };
 }
 
-use impl_ints;
+use impl_uints;

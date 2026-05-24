@@ -1,11 +1,34 @@
+use std::num::NonZero;
+
 use aes::cipher::{
     BlockCipherDecrypt, KeyInit,
     array::{AsArrayMut, AsArrayRef, AssocArraySize},
 };
 use thiserror::Error;
-use zerocopy::{FromBytes, Immutable, KnownLayout, TryFromBytes, Unaligned};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
 
-use crate::unaligned::{U16, U24, U32};
+use crate::{
+    dvdbnd::bhd5::{
+        ByteOrderExt,
+        format::{Encryption, FileEntry as Bhd5Entry},
+    },
+    unaligned::{U16, U24, U32},
+};
+
+#[derive(Debug, Error)]
+pub enum StoreError {
+    #[error("too many encryption entries")]
+    TooManyEntries,
+
+    #[error("too many encrypted ranges")]
+    TooManyRanges,
+
+    #[error("the encrypted range ({0}..{1}) is invalid")]
+    BadRange(u64, u64),
+
+    #[error("file (at {2}; size {3}) does not contain the encrypted range ({0}..{1})")]
+    OobRange(u64, u64, u64, u32),
+}
 
 #[derive(Debug, Error)]
 pub enum DecryptError {
@@ -34,11 +57,85 @@ impl<T: AsRef<[u8]>> EncryptionStore for T {
     }
 }
 
+pub fn store_encryption<O, E>(
+    entry: &E,
+    encryption: &Encryption<O>,
+    out: &mut Vec<u8>,
+) -> Result<usize, StoreError>
+where
+    O: ByteOrderExt,
+    E: Bhd5Entry<O>,
+{
+    let index = (NonZero::new(out.len() ^ usize::MAX).unwrap())
+        .try_into()
+        .map_err(|_| StoreError::TooManyEntries)?;
+
+    const BLOCK_SIZE: u32 = 16;
+    const MAX_BLOCK_COUNT: u32 = u16::MAX as u32 + 1;
+
+    let file_offset = entry.file_offset();
+    let file_size = entry.file_size() as u64;
+
+    let mut ranges = Vec::with_capacity(encryption.ranges.len());
+
+    for range in &encryption.ranges {
+        let (start, end) = (range.start_offset.get(), range.end_offset.get());
+        let len = start.wrapping_sub(end);
+
+        if start > end || !len.is_multiple_of(BLOCK_SIZE as u64) {
+            return Err(StoreError::BadRange(start, end));
+        }
+
+        let start_offset = start.wrapping_sub(file_offset);
+        if start_offset > file_size.saturating_sub(len) {
+            return Err(StoreError::OobRange(
+                start,
+                end,
+                file_offset,
+                file_size as u32,
+            ));
+        }
+
+        let block_count = len as u32 / BLOCK_SIZE;
+        let mut start_offset = start_offset as u32;
+
+        for _ in 0..block_count / MAX_BLOCK_COUNT {
+            ranges.push(Range {
+                start_offset: U32::new(start_offset),
+                block_count: U16::MAX,
+            });
+
+            start_offset += MAX_BLOCK_COUNT * BLOCK_SIZE;
+        }
+
+        ranges.push(Range {
+            start_offset: U32::new(start_offset),
+            block_count: U16::new((block_count % MAX_BLOCK_COUNT) as u16),
+        });
+    }
+
+    let key = encryption.key;
+    let range_count = u32::try_from(ranges.len())
+        .and_then(U24::try_from)
+        .map_err(|_| StoreError::TooManyRanges)?;
+
+    let header = Header::Aes128EcbNone(Aes128(Aes {
+        key,
+        iv: (),
+        range_count,
+    }));
+
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(ranges.as_bytes());
+
+    Ok(index)
+}
+
 #[cfg_attr(
     feature = "rkyv",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
 )]
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, TryFromBytes)]
+#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, TryFromBytes)]
 #[repr(u8)]
 enum Header {
     Aes128EcbNone(Aes128),
@@ -57,7 +154,7 @@ enum AesError {
     feature = "rkyv",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
 )]
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, FromBytes)]
+#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
 #[repr(transparent)]
 struct Aes128(Aes<16>);
 
@@ -65,7 +162,7 @@ struct Aes128(Aes<16>);
     feature = "rkyv",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
 )]
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, FromBytes)]
+#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
 #[repr(C, align(1))]
 struct Aes<const N: usize, Iv = ()> {
     key: [u8; N],
@@ -77,7 +174,7 @@ struct Aes<const N: usize, Iv = ()> {
     feature = "rkyv",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
 )]
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, FromBytes)]
+#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
 #[repr(C, align(1))]
 struct Range {
     start_offset: U32,

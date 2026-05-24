@@ -242,7 +242,8 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         {
             entries
                 .iter()
-                .flat_map(|e| *e)
+                .cloned()
+                .flatten()
                 .map(|entry| {
                     let Some(encryption_offset) = entry.encryption_offset() else {
                         return Ok(None);
@@ -360,7 +361,6 @@ fn try_ref_slice_helper<'a, B: TryFromBytes + Immutable>(
 }
 
 impl<O: ByteOrderExt> Header<O> {
-    pub const IS_LE: bool = O::IS_LE;
     pub const SALT_OFFSET: usize = offset_of!(Self, bucket_offset) + 4;
 
     pub fn is_dsr_format(&self) -> bool {
@@ -420,10 +420,22 @@ trait BucketHeader {
     fn entry_offset(&self) -> impl TryInto<usize>;
 }
 
-trait FileEntry<O: ByteOrderExt> {
+pub trait FileEntry<O: ByteOrderExt> {
+    const U64_HASH: bool = false;
+
+    fn path_hash(&self) -> u64;
+
     fn file_offset(&self) -> u64;
 
-    fn encryption_offset(&self) -> Option<NonZero<u64>>;
+    fn file_size(&self) -> u32;
+
+    fn unpadded_file_size(&self) -> Option<NonZero<u32>> {
+        None
+    }
+
+    fn encryption_offset(&self) -> Option<NonZero<u64>> {
+        None
+    }
 
     fn is_valid(&self, header: &Header<O>) -> bool;
 }
@@ -449,12 +461,16 @@ impl<O: ByteOrderExt> BucketHeader for BucketHeaderDsr<O> {
 }
 
 impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs<O> {
+    fn path_hash(&self) -> u64 {
+        self.path_hash.get() as u64
+    }
+
     fn file_offset(&self) -> u64 {
         self.file_offset.get()
     }
 
-    fn encryption_offset(&self) -> Option<NonZero<u64>> {
-        None
+    fn file_size(&self) -> u32 {
+        self.file_size.get().max(0) as u32
     }
 
     fn is_valid(&self, _header: &Header<O>) -> bool {
@@ -463,8 +479,16 @@ impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs<O> {
 }
 
 impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs2<O> {
+    fn path_hash(&self) -> u64 {
+        self.path_hash.get() as u64
+    }
+
     fn file_offset(&self) -> u64 {
         self.file_offset.get()
+    }
+
+    fn file_size(&self) -> u32 {
+        self.file_size.get().max(0) as u32
     }
 
     fn encryption_offset(&self) -> Option<NonZero<u64>> {
@@ -486,8 +510,20 @@ impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs2<O> {
 }
 
 impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs3<O> {
+    fn path_hash(&self) -> u64 {
+        self.path_hash.get() as u64
+    }
+
     fn file_offset(&self) -> u64 {
         self.file_offset.get()
+    }
+
+    fn file_size(&self) -> u32 {
+        self.file_size.get().max(0) as u32
+    }
+
+    fn unpadded_file_size(&self) -> Option<NonZero<u32>> {
+        NonZero::new(self.unpadded_file_size.get().max(0) as u32)
     }
 
     fn encryption_offset(&self) -> Option<NonZero<u64>> {
@@ -512,8 +548,22 @@ impl<O: ByteOrderExt> FileEntry<O> for FileEntryDs3<O> {
 }
 
 impl<O: ByteOrderExt> FileEntry<O> for FileEntryEr<O> {
+    const U64_HASH: bool = true;
+
+    fn path_hash(&self) -> u64 {
+        self.path_hash.get()
+    }
+
     fn file_offset(&self) -> u64 {
         self.file_offset.get()
+    }
+
+    fn file_size(&self) -> u32 {
+        self.file_size.get().max(0) as u32
+    }
+
+    fn unpadded_file_size(&self) -> Option<NonZero<u32>> {
+        NonZero::new(self.unpadded_file_size.get().max(0) as u32)
     }
 
     fn encryption_offset(&self) -> Option<NonZero<u64>> {

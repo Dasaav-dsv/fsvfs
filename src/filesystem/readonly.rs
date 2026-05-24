@@ -26,7 +26,6 @@ pub struct RofsBuilder<'a, 'b, T> {
     hard_links: Vec<(&'b str, &'a str)>,
 }
 
-#[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
 pub struct Rofs<'a, T, C: Config = DefaultConfig> {
     nodes: Box<[Node]>,
@@ -121,25 +120,44 @@ impl<'a, 'b, T> RofsBuilder<'a, 'b, T> {
     }
 
     pub fn finish<C: Config>(&mut self) -> Rofs<'static, T, C> {
-        Rofs::new(mem::take(&mut self.files))
+        let Self { files, hard_links } = mem::take(self);
+        Rofs::new(files, hard_links)
     }
 }
 
 impl<T, C: Config> Rofs<'_, T, C> {
-    fn new(files: Vec<(&str, T)>) -> Rofs<'static, T, C> {
-        let _ = Self::inode_from(files.len());
+    fn new(files: Vec<(&str, T)>, hard_links: Vec<(&str, &str)>) -> Rofs<'static, T, C> {
+        let _ = Self::inode_from(files.len() + hard_links.len());
 
-        let (components, files) = files
+        let (mut components, files): (Vec<_>, Vec<_>) = files
             .into_iter()
-            .enumerate()
-            .map(|(i, (path, file))| {
+            .zip(0..)
+            .map(|((path, file), data_index)| {
                 let components = normalize_components::<C>(path);
-                let file_index = FileNode {
-                    data_index: i as u32,
-                };
+                let file_index = FileNode { data_index };
                 ((components, file_index), file)
             })
-            .unzip::<_, _, Vec<_>, Vec<_>>();
+            .unzip();
+
+        components.reserve_exact(hard_links.len());
+
+        let mut hard_links = hard_links
+            .into_iter()
+            .map(|(from, to)| {
+                (
+                    normalize_components::<C>(from),
+                    normalize_components::<C>(to),
+                )
+            })
+            .collect::<FxHashMap<_, _>>();
+
+        for i in 0..components.len() {
+            let (component, file_index) = &components[i];
+
+            if let Some(to) = hard_links.remove(component) {
+                components.push((to, *file_index));
+            }
+        }
 
         enum TreeNode<'a> {
             Branch(FxHashMap<&'a str, TreeNode<'a>>),
@@ -412,22 +430,33 @@ where
     (start, end)
 }
 
-impl<C: Config> Default for RofsBuilder<'_, '_, C> {
+impl<T> Default for RofsBuilder<'_, '_, T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
+impl<T: fmt::Debug, C: Config> fmt::Debug for Rofs<'_, T, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Rofs")
+            .field("nodes", &self.nodes)
+            .field("files", &self.files)
+            .field("paths", &self.paths)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Cow, fs, sync::LazyLock};
+    use std::{borrow::Cow, fs, path::Path, sync::LazyLock};
 
     use crate::{
+        cow::CowExt,
         filesystem::readonly::{Config, Entry, ReadOnlyFilesystem, Rofs, RofsBuilder},
         hash::hash_path32,
     };
 
-    const PATHS: [&str; 11] = [
+    const PATHS: [&str; 22] = [
         "model/map/t50_38_00_00.tpfbhd",
         "model/map/t50_38_00_00_low.tpfbdt",
         "model/obj/o00_0001.bnd",
@@ -439,10 +468,22 @@ mod tests {
         "model_hq/chr/c5000.texbnd",
         "model_hq/parts/shield/sd_1000_m.bnd",
         "model_hq/parts/shield/sd_1000_m_l.bnd",
+        ".gamedataebl/d0/d0d8f66f",
+        ".gamedataebl/c9/c97bf2b8",
+        ".gamedataebl/76/764987ae",
+        ".hqmapebl/46/4676b068",
+        ".hqmapebl/46/4676b0ec",
+        ".hqmapebl/d0/d00e74ce",
+        ".hqmapebl/d0/d00e7552",
+        ".hqobjebl/47/4799c947",
+        ".hqchrebl/d9/d969da6a",
+        ".hqpartsebl/43/43aae981",
+        ".hqpartsebl/a8/a86e5d60",
     ];
 
     #[test]
     fn lookup() {
+        fs::write("out.txt", &format!("{:#?}", bnd_fs())).unwrap();
         lookup_in_fs(bnd_fs(), &PATHS);
     }
 
@@ -452,7 +493,10 @@ mod tests {
     }
 
     #[track_caller]
-    fn lookup_in_fs<F: ReadOnlyFilesystem>(f: &F, paths: &[&str]) {
+    fn lookup_in_fs<F: ReadOnlyFilesystem>(f: &F, paths: &[&str])
+    where
+        F: ReadOnlyFilesystem,
+    {
         assert_eq!(f.lookup("/").unwrap(), 0);
         assert_eq!(f.path(0).unwrap(), "/");
 
@@ -465,54 +509,69 @@ mod tests {
     #[track_caller]
     fn get_data_in_fs<F: ReadOnlyFilesystem>(f: &F, paths: &[&str])
     where
-        F::File: Copy + Into<u32>,
+        F::File: IntoIterator<Item: PartialEq<u32>> + Copy,
     {
         for &path in paths {
             let inode = f.lookup(path).unwrap();
-            let Entry::File(&hash) = f.get(inode).unwrap() else {
+            let Entry::File(&hashes) = f.get(inode).unwrap() else {
                 panic!("not a file");
             };
 
-            assert_eq!(hash.into(), hash_path32(path).unwrap());
+            let expected = hash_path32(path).unwrap();
+            assert!(hashes.into_iter().any(|hash| hash == expected), "{path}",);
         }
     }
 
+    #[derive(Debug)]
     struct BndConfig;
     impl Config for BndConfig {
         const SEPARATORS: &[char] = &['/', '\\'];
 
         fn normalize_component(component: &str) -> Cow<'_, str> {
-            if component.as_bytes().iter().any(u8::is_ascii_uppercase) {
-                Cow::Owned(component.to_ascii_lowercase())
-            } else {
-                Cow::Borrowed(component)
-            }
+            let mut component = Cow::Borrowed(component);
+            Cow::make_ascii_lowercase(&mut component);
+            component
         }
     }
 
-    type BndFs<'a> = Rofs<'a, u32, BndConfig>;
+    type BndFs<'a> = Rofs<'a, [u32; 2], BndConfig>;
 
     #[track_caller]
     fn bnd_fs() -> &'static BndFs<'static> {
-        static FS: LazyLock<BndFs> =
-            LazyLock::new(|| {
-                let files = [
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/GameDataEbl.txt",
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/HqChrEbl.txt",
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/HqMapEbl.txt",
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/HqObjEbl.txt",
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/HqPartsEbl.txt",
-                ]
-                .into_iter()
-                .map(|path| fs::read_to_string(path).unwrap())
+        static FS: LazyLock<BndFs> = LazyLock::new(|| {
+            let files = [
+                "dist/dvdbnd/Hash/DarkSouls2_PC/GameDataEbl.txt",
+                "dist/dvdbnd/Hash/DarkSouls2_PC/HqChrEbl.txt",
+                "dist/dvdbnd/Hash/DarkSouls2_PC/HqMapEbl.txt",
+                "dist/dvdbnd/Hash/DarkSouls2_PC/HqObjEbl.txt",
+                "dist/dvdbnd/Hash/DarkSouls2_PC/HqPartsEbl.txt",
+            ]
+            .into_iter()
+            .map(|path| (Path::new(path), fs::read_to_string(path).unwrap()))
+            .collect::<Vec<_>>();
+
+            let path_hashes = files
+                .iter()
+                .flat_map(|(bnd_path, file)| {
+                    file.lines().map(|path| {
+                        let hash = hash_path32(path).unwrap();
+                        let bnd = bnd_path.file_prefix().unwrap().to_str().unwrap();
+                        let hash_path = format!(".{bnd}/{:02x}/{hash:08x}", hash >> 24);
+                        let hash_path_hash = hash_path32(&hash_path).unwrap();
+                        (path, hash_path, [hash, hash_path_hash])
+                    })
+                })
                 .collect::<Vec<_>>();
 
-                RofsBuilder::new()
-                    .with_files(files.iter().flat_map(|file| {
-                        file.lines().map(|path| (path, hash_path32(path).unwrap()))
-                    }))
-                    .finish()
-            });
+            RofsBuilder::new()
+                .with_files(
+                    path_hashes
+                        .iter()
+                        .map(|(_, hash_path, hashes)| (hash_path.as_str(), *hashes)),
+                )
+                .with_hard_links(path_hashes.iter().map(|(to, from, _)| (from.as_str(), *to)))
+                .finish()
+        });
 
         &FS
     }
@@ -520,6 +579,8 @@ mod tests {
     #[cfg(feature = "rkyv")]
     mod rkyv_tests {
         use rkyv::{rancor::Error, util::AlignedVec};
+
+        use crate::filesystem::readonly::ArchivedRofs;
 
         use super::*;
 
@@ -533,7 +594,7 @@ mod tests {
             get_data_in_fs(archived_bnd_fs(), &PATHS);
         }
 
-        type ArchivedBndFs<'a> = crate::filesystem::readonly::ArchivedRofs<'a, u32, BndConfig>;
+        type ArchivedBndFs<'a> = ArchivedRofs<'a, [u32; 2], BndConfig>;
 
         #[track_caller]
         fn archived_bnd_fs() -> &'static ArchivedBndFs<'static> {

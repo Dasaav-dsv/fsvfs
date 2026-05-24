@@ -38,24 +38,21 @@ impl Dictionary {
         Ok(Self { by_bnd })
     }
 
-    #[inline]
-    pub fn hash_path32_iter<'a>(&'a self, bnd_name: &str) -> impl Iterator<Item = (&'a str, u32)> {
-        self.hash_path_iter(bnd_name, hash_path32)
+    pub fn hash_paths32<'a>(&'a self, bnd_name: &str) -> FxHashMap<u32, &'a str> {
+        self.hash_path_iter(bnd_name, hash_path32).collect()
     }
 
-    #[inline]
-    pub fn hash_path64_iter<'a>(&'a self, bnd_name: &str) -> impl Iterator<Item = (&'a str, u64)> {
-        self.hash_path_iter(bnd_name, hash_path64)
+    pub fn hash_paths64<'a>(&'a self, bnd_name: &str) -> FxHashMap<u64, &'a str> {
+        self.hash_path_iter(bnd_name, hash_path64).collect()
     }
 
-    #[inline]
-    fn hash_path_iter<'a, F, T>(
+    fn hash_path_iter<'a, F, H>(
         &'a self,
         bnd_name: &str,
         f: F,
-    ) -> impl Iterator<Item = (&'a str, T)>
+    ) -> impl Iterator<Item = (H, &'a str)>
     where
-        F: Fn(&str) -> Option<T> + 'static,
+        F: Fn(&str) -> Option<H> + 'static,
     {
         let mut bnd_name = Cow::Borrowed(bnd_name);
         Cow::make_ascii_lowercase(&mut bnd_name);
@@ -64,10 +61,7 @@ impl Dictionary {
             .get(&*bnd_name)
             .into_iter()
             .flat_map(|contents| contents.lines())
-            .filter_map(move |path| {
-                let hash = f(path)?;
-                Some((path, hash))
-            })
+            .filter_map(move |path| f(path).zip(Some(path)))
     }
 }
 
@@ -82,16 +76,15 @@ mod tests {
 
         assert_eq!(dict.by_bnd.len(), 4);
 
-        let paths_and_hashes = dict.hash_path32_iter("dvdbnd3").take(4).collect::<Vec<_>>();
+        let paths = dict.hash_paths32("dvdbnd3");
 
-        assert_eq!(
-            paths_and_hashes,
-            [
-                ("/msg/english/item.msgbnd.dcx", 1353983167),
-                ("/msg/english/menu.msgbnd.dcx", 1995071881),
-                ("/msg/french/item.msgbnd.dcx", 3004801203),
-                ("/msg/french/menu.msgbnd.dcx", 3645889917)
-            ]
-        )
+        for (path, hash) in [
+            ("/msg/english/item.msgbnd.dcx", 1353983167),
+            ("/msg/english/menu.msgbnd.dcx", 1995071881),
+            ("/msg/french/item.msgbnd.dcx", 3004801203),
+            ("/msg/french/menu.msgbnd.dcx", 3645889917),
+        ] {
+            assert_eq!(paths.get(&hash), Some(&path), "{path}");
+        }
     }
 }
