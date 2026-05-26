@@ -18,12 +18,15 @@ use crate::filesystem::paths::Paths;
 pub enum RofsError {
     #[error("no such entity")]
     NotFound,
+
+    #[error("not a file")]
+    IsDir,
 }
 
 #[derive(Debug)]
 pub struct RofsBuilder<'a, 'b, T> {
     files: Vec<(&'a str, T)>,
-    hard_links: Vec<(&'b str, &'a str)>,
+    hard_links: Vec<(&'a str, &'b str)>,
 }
 
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
@@ -57,25 +60,29 @@ impl Config for DefaultConfig {}
 pub trait ReadOnlyFilesystem {
     type File;
 
-    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError>;
+    fn entry(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError>;
 
-    fn get_iter<R>(
+    fn entries_iter<R>(
         &self,
         range: R,
     ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
     where
         R: RangeBounds<u32>;
 
+    fn file_data(&self, entry: &Entry<'_, Self::File>) -> Result<u32, RofsError>;
+
+    fn file_data_iter(&self) -> impl Iterator<Item = &Self::File>;
+
     fn path(&self, inode: u32) -> Result<&str, RofsError>;
 
     fn lookup(&self, path: &str) -> Result<u32, RofsError>;
 
     fn is_dir(&self, inode: u32) -> Result<bool, RofsError> {
-        Ok(matches!(self.get(inode)?, Entry::Dir(_)))
+        Ok(matches!(self.entry(inode)?, Entry::Dir(_)))
     }
 
     fn is_file(&self, inode: u32) -> Result<bool, RofsError> {
-        Ok(matches!(self.get(inode)?, Entry::File(_)))
+        Ok(matches!(self.entry(inode)?, Entry::File(_)))
     }
 }
 
@@ -113,7 +120,7 @@ impl<'a, 'b, T> RofsBuilder<'a, 'b, T> {
 
     pub fn with_hard_links<I>(&mut self, iter: I) -> &mut Self
     where
-        I: IntoIterator<Item = (&'b str, &'a str)>,
+        I: IntoIterator<Item = (&'a str, &'b str)>,
     {
         self.hard_links.extend(iter);
         self
@@ -310,14 +317,14 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     type File = T;
 
     #[inline]
-    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError> {
+    fn entry(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError> {
         let index = usize::try_from(inode).expect("index too large");
         let node = self.nodes.get(index).ok_or(RofsError::NotFound)?;
         Ok(self.node_to_entry(node))
     }
 
     #[inline]
-    fn get_iter<R>(
+    fn entries_iter<R>(
         &self,
         range: R,
     ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
@@ -327,6 +334,26 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
         let range = map_range(range);
         let nodes = self.nodes.get(range).ok_or(RofsError::NotFound)?;
         Ok(nodes.iter().map(|node| self.node_to_entry(node)))
+    }
+
+    #[inline]
+    fn file_data(&self, entry: &Entry<'_, Self::File>) -> Result<u32, RofsError> {
+        match entry {
+            Entry::File(data) => {
+                let index = self
+                    .files
+                    .element_offset(*data)
+                    .expect("entry does not belong to this filesystem");
+
+                Ok(index as u32)
+            }
+            Entry::Dir(_) => Err(RofsError::IsDir),
+        }
+    }
+
+    #[inline]
+    fn file_data_iter(&self) -> impl Iterator<Item = &Self::File> {
+        self.files.iter()
     }
 
     #[inline]
@@ -349,14 +376,14 @@ where
     type File = T::Archived;
 
     #[inline]
-    fn get(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError> {
+    fn entry(&self, inode: u32) -> Result<Entry<'_, Self::File>, RofsError> {
         let index = usize::try_from(inode).expect("index too large");
         let node = (*self.nodes).get(index).ok_or(RofsError::NotFound)?;
         Ok(self.node_to_entry(node))
     }
 
     #[inline]
-    fn get_iter<R>(
+    fn entries_iter<R>(
         &self,
         range: R,
     ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
@@ -366,6 +393,26 @@ where
         let range = map_range(range);
         let nodes = (*self.nodes).get(range).ok_or(RofsError::NotFound)?;
         Ok(nodes.iter().map(|node| self.node_to_entry(node)))
+    }
+
+    #[inline]
+    fn file_data(&self, entry: &Entry<'_, Self::File>) -> Result<u32, RofsError> {
+        match entry {
+            Entry::File(data) => {
+                let index = self
+                    .files
+                    .element_offset(*data)
+                    .expect("entry does not belong to this filesystem");
+
+                Ok(index as u32)
+            }
+            Entry::Dir(_) => Err(RofsError::IsDir),
+        }
+    }
+
+    #[inline]
+    fn file_data_iter(&self) -> impl Iterator<Item = &Self::File> {
+        self.files.iter()
     }
 
     #[inline]
@@ -483,7 +530,6 @@ mod tests {
 
     #[test]
     fn lookup() {
-        fs::write("out.txt", &format!("{:#?}", bnd_fs())).unwrap();
         lookup_in_fs(bnd_fs(), &PATHS);
     }
 
@@ -513,7 +559,7 @@ mod tests {
     {
         for &path in paths {
             let inode = f.lookup(path).unwrap();
-            let Entry::File(&hashes) = f.get(inode).unwrap() else {
+            let Entry::File(&hashes) = f.entry(inode).unwrap() else {
                 panic!("not a file");
             };
 

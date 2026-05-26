@@ -8,7 +8,7 @@ use crate::{
     cow::CowExt,
     dvdbnd::{
         bhd5::{
-            ByteOrderExt,
+            ByteOrderExt, FileAny as Bhd5FileAny,
             format::{Buckets, Encryption, File as Bhd5File, FileEntry as Bhd5Entry},
         },
         dict::Dictionary,
@@ -19,51 +19,51 @@ use crate::{
 
 pub mod encryption;
 
-pub trait BndFilesystem {
-    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: BndFile>;
+pub trait DvdbndFilesystem {
+    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile>;
 
     fn encryption_store(&self) -> &impl EncryptionStore;
 }
 
-pub trait BndFile {
-    fn data_index(&self) -> usize;
+pub trait DvdbndFile {
+    fn src_index(&self) -> usize;
 
     fn data_offset(&self) -> u64;
 
-    fn data_len(&self) -> u32;
+    fn len(&self) -> u32;
 
-    fn unpadded_data_len(&self) -> u32;
+    fn unpadded_len(&self) -> u32;
 
     fn encryption_index(&self) -> Option<usize>;
 }
 
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
 #[derive(Debug)]
-pub struct BndRofs {
-    inner: Rofs<'static, File, BndConfig>,
+pub struct DvdbndRofs {
+    inner: Rofs<'static, File, DvdbndConfig>,
     encryption_store: Vec<u8>,
 }
 
 #[derive(Debug)]
-pub struct BndRofsBuilder<'a, 'b, 'c, O: ByteOrderExt> {
-    bhds: IndexMap<&'a str, Bhd5File<'b, O>, FxBuildHasher>,
+pub struct DvdbndRofsBuilder<'a, 'b, 'c> {
+    bhds: IndexMap<&'a str, Bhd5FileAny<'b>, FxBuildHasher>,
     dict: Option<&'c Dictionary>,
 }
 
 #[derive(Debug)]
-struct BndConfig;
+struct DvdbndConfig;
 
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
 #[derive(Clone, Copy, Debug)]
 struct File {
     data_offset: u64,
-    data_index: u32,
-    data_len: u32,
-    unpadded_data_len: u32,
+    len: u32,
+    unpadded_len: u32,
+    src_index: u32,
     encryption_index: Option<NonZero<u32>>,
 }
 
-impl<'a, 'b, 'c, O: ByteOrderExt> BndRofsBuilder<'a, 'b, 'c, O> {
+impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
     pub const fn new() -> Self {
         Self {
             bhds: IndexMap::with_hasher(FxBuildHasher::new()),
@@ -78,28 +78,20 @@ impl<'a, 'b, 'c, O: ByteOrderExt> BndRofsBuilder<'a, 'b, 'c, O> {
 
     pub fn with_bhds<I>(&mut self, iter: I) -> &mut Self
     where
-        I: IntoIterator<Item = (&'a str, Bhd5File<'b, O>)>,
+        I: IntoIterator<Item = (&'a str, Bhd5FileAny<'b>)>,
     {
         self.bhds.extend(iter);
         self
     }
 
-    pub fn finish(&mut self) -> eyre::Result<BndRofs> {
-        let builder = mem::take(self);
-
+    pub fn finish(&mut self) -> eyre::Result<DvdbndRofs> {
         let mut encryption_store = vec![];
         let mut files_by_bhd = vec![];
 
-        for ((&bnd_name, bhd), i) in builder.bhds.iter().zip(0..) {
-            let encryption = &bhd.encryption;
-            let store = &mut encryption_store;
-
-            use Buckets as B;
-            let files = match &bhd.buckets {
-                B::DarkSouls(e) => self.process_files(e, bnd_name, i, encryption, store),
-                B::DarkSouls2(e) => self.process_files(e, bnd_name, i, encryption, store),
-                B::DarkSouls3(e) => self.process_files(e, bnd_name, i, encryption, store),
-                B::EldenRing(e) => self.process_files(e, bnd_name, i, encryption, store),
+        for ((&bnd_name, bhd), i) in self.bhds.iter().zip(0..) {
+            let files = match bhd {
+                Bhd5FileAny::LE(bhd) => self.process_bhd(bhd, bnd_name, i, &mut encryption_store),
+                Bhd5FileAny::BE(bhd) => self.process_bhd(bhd, bnd_name, i, &mut encryption_store),
             };
 
             files_by_bhd.push((bnd_name, files?));
@@ -122,7 +114,7 @@ impl<'a, 'b, 'c, O: ByteOrderExt> BndRofsBuilder<'a, 'b, 'c, O> {
             .iter()
             .flat_map(|(_, files)| files.as_slice())
             .zip(&hash_paths)
-            .filter_map(|((_, from, _), (to, _))| from.zip(Some(to)))
+            .filter_map(|((_, to, _), (from, _))| Some(from.as_str()).zip(*to))
             .collect::<Vec<_>>();
 
         let inner = RofsBuilder::new()
@@ -131,27 +123,54 @@ impl<'a, 'b, 'c, O: ByteOrderExt> BndRofsBuilder<'a, 'b, 'c, O> {
                     .iter()
                     .map(|(path, file)| (path.as_str(), **file)),
             )
-            .with_hard_links(
-                hard_link_paths
-                    .iter()
-                    .map(|&(from, to)| (from, to.as_str())),
-            )
+            .with_hard_links(hard_link_paths.iter().cloned())
             .finish();
 
-        Ok(BndRofs {
+        Ok(DvdbndRofs {
             inner,
             encryption_store,
         })
     }
 
-    fn process_files<E: Bhd5Entry<O>>(
+    fn process_bhd<O: ByteOrderExt>(
+        &self,
+        bhd: &Bhd5File<'_, O>,
+        bnd_name: &str,
+        src_index: u32,
+        encryption_store: &mut Vec<u8>,
+    ) -> eyre::Result<Vec<(u64, Option<&'c str>, File)>> {
+        let encryption = &bhd.encryption;
+
+        let files = match &bhd.buckets {
+            Buckets::DarkSouls(e) => {
+                self.process_files(e, bnd_name, src_index, encryption, encryption_store)?
+            }
+            Buckets::DarkSouls2(e) => {
+                self.process_files(e, bnd_name, src_index, encryption, encryption_store)?
+            }
+            Buckets::DarkSouls3(e) => {
+                self.process_files(e, bnd_name, src_index, encryption, encryption_store)?
+            }
+            Buckets::EldenRing(e) => {
+                self.process_files(e, bnd_name, src_index, encryption, encryption_store)?
+            }
+        };
+
+        Ok(files)
+    }
+
+    fn process_files<O, E>(
         &self,
         entries: &[&[E]],
         bnd_name: &str,
-        data_index: u32,
+        src_index: u32,
         encryption: &[Option<&Encryption<O>>],
         encryption_store: &mut Vec<u8>,
-    ) -> eyre::Result<Vec<(u64, Option<&'c str>, File)>> {
+    ) -> eyre::Result<Vec<(u64, Option<&'c str>, File)>>
+    where
+        O: ByteOrderExt,
+        E: Bhd5Entry<O>,
+    {
         enum Hashes<T0, T1> {
             U32(T0),
             U64(T1),
@@ -172,7 +191,7 @@ impl<'a, 'b, 'c, O: ByteOrderExt> BndRofsBuilder<'a, 'b, 'c, O> {
                     .map(|encryption| store_encryption(entry, encryption, encryption_store))
                 {
                     Some(index) => {
-                        let index = NonZero::new(index? ^ usize::MAX)
+                        let index = NonZero::new(index? ^ u32::MAX as usize)
                             .unwrap()
                             .try_into()
                             .expect("too many encryption entries");
@@ -191,9 +210,9 @@ impl<'a, 'b, 'c, O: ByteOrderExt> BndRofsBuilder<'a, 'b, 'c, O> {
 
                 let file = File {
                     data_offset: entry.file_offset(),
-                    data_index,
-                    data_len: entry.file_size(),
-                    unpadded_data_len: entry.unpadded_file_size().map(NonZero::get).unwrap_or(0),
+                    src_index,
+                    len: entry.file_size(),
+                    unpadded_len: entry.unpadded_file_size().map(NonZero::get).unwrap_or(0),
                     encryption_index,
                 };
 
@@ -203,15 +222,15 @@ impl<'a, 'b, 'c, O: ByteOrderExt> BndRofsBuilder<'a, 'b, 'c, O> {
     }
 }
 
-impl<O: ByteOrderExt> Default for BndRofsBuilder<'_, '_, '_, O> {
+impl Default for DvdbndRofsBuilder<'_, '_, '_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BndFilesystem for BndRofs {
+impl DvdbndFilesystem for DvdbndRofs {
     #[inline]
-    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: BndFile> {
+    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile> {
         &self.inner
     }
 
@@ -221,10 +240,10 @@ impl BndFilesystem for BndRofs {
     }
 }
 
-impl BndFile for File {
+impl DvdbndFile for File {
     #[inline]
-    fn data_index(&self) -> usize {
-        self.data_index as usize
+    fn src_index(&self) -> usize {
+        self.src_index as usize
     }
 
     #[inline]
@@ -233,13 +252,13 @@ impl BndFile for File {
     }
 
     #[inline]
-    fn data_len(&self) -> u32 {
-        self.data_len
+    fn len(&self) -> u32 {
+        self.len
     }
 
     #[inline]
-    fn unpadded_data_len(&self) -> u32 {
-        self.unpadded_data_len
+    fn unpadded_len(&self) -> u32 {
+        self.unpadded_len
     }
 
     #[inline]
@@ -250,9 +269,9 @@ impl BndFile for File {
 }
 
 #[cfg(feature = "rkyv")]
-impl BndFilesystem for ArchivedBndRofs {
+impl DvdbndFilesystem for ArchivedDvdbndRofs {
     #[inline]
-    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: BndFile> {
+    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile> {
         &self.inner
     }
 
@@ -263,10 +282,10 @@ impl BndFilesystem for ArchivedBndRofs {
 }
 
 #[cfg(feature = "rkyv")]
-impl BndFile for ArchivedFile {
+impl DvdbndFile for ArchivedFile {
     #[inline]
-    fn data_index(&self) -> usize {
-        self.data_index.to_native() as usize
+    fn src_index(&self) -> usize {
+        self.src_index.to_native() as usize
     }
 
     #[inline]
@@ -275,13 +294,13 @@ impl BndFile for ArchivedFile {
     }
 
     #[inline]
-    fn data_len(&self) -> u32 {
-        self.data_len.to_native()
+    fn len(&self) -> u32 {
+        self.len.to_native()
     }
 
     #[inline]
-    fn unpadded_data_len(&self) -> u32 {
-        self.unpadded_data_len.to_native()
+    fn unpadded_len(&self) -> u32 {
+        self.unpadded_len.to_native()
     }
 
     #[inline]
@@ -292,7 +311,7 @@ impl BndFile for ArchivedFile {
     }
 }
 
-impl Config for BndConfig {
+impl Config for DvdbndConfig {
     const SEPARATORS: &[char] = &['/', '\\'];
 
     fn normalize_component(component: &str) -> Cow<'_, str> {

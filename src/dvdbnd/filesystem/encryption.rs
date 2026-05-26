@@ -17,9 +17,6 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum StoreError {
-    #[error("too many encryption entries")]
-    TooManyEntries,
-
     #[error("too many encrypted ranges")]
     TooManyRanges,
 
@@ -66,10 +63,6 @@ where
     O: ByteOrderExt,
     E: Bhd5Entry<O>,
 {
-    let index = (NonZero::new(out.len() ^ usize::MAX).unwrap())
-        .try_into()
-        .map_err(|_| StoreError::TooManyEntries)?;
-
     const BLOCK_SIZE: u32 = 16;
     const MAX_BLOCK_COUNT: u32 = u16::MAX as u32 + 1;
 
@@ -80,14 +73,13 @@ where
 
     for range in &encryption.ranges {
         let (start, end) = (range.start_offset.get(), range.end_offset.get());
-        let len = start.wrapping_sub(end);
+        let len = end.wrapping_sub(start);
 
         if start > end || !len.is_multiple_of(BLOCK_SIZE as u64) {
             return Err(StoreError::BadRange(start, end));
         }
 
-        let start_offset = start.wrapping_sub(file_offset);
-        if start_offset > file_size.saturating_sub(len) {
+        if len != 0 && start > file_size.saturating_sub(len) {
             return Err(StoreError::OobRange(
                 start,
                 end,
@@ -97,7 +89,7 @@ where
         }
 
         let block_count = len as u32 / BLOCK_SIZE;
-        let mut start_offset = start_offset as u32;
+        let mut start_offset = start as u32;
 
         for _ in 0..block_count / MAX_BLOCK_COUNT {
             ranges.push(Range {
@@ -124,6 +116,8 @@ where
         iv: (),
         range_count,
     }));
+
+    let index = out.len();
 
     out.extend_from_slice(header.as_bytes());
     out.extend_from_slice(ranges.as_bytes());
@@ -209,8 +203,8 @@ impl<const N: usize> Aes<N> {
         [u8; N]: AssocArraySize<Size = C::BlockSize> + AsArrayMut<u8>,
     {
         let range_count = self.range_count.get() as usize;
-        let ranges =
-            <[Range]>::ref_from_bytes_with_elems(data, range_count).map_err(|_| AesError::Range)?;
+        let (ranges, _) = <[Range]>::ref_from_prefix_with_elems(data, range_count)
+            .map_err(|_| AesError::Range)?;
 
         for range in ranges {
             let start = range.start_offset.get() as usize;

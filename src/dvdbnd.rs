@@ -11,7 +11,7 @@ use tracing::instrument;
 
 use crate::{
     cli::DvdbndArgs,
-    dvdbnd::{dict::Dictionary, keys::KeyProvider, path::ArchivePaths},
+    dvdbnd::{dict::Dictionary, keys::KeyProvider, mount::DvdbndMount, path::ArchivePaths},
 };
 
 mod bhd5;
@@ -37,6 +37,8 @@ pub fn mount(
         Some(game) => Some(Dictionary::from_dir_and_game(dict_dir, game)?),
         None => None,
     };
+
+    let mount = DvdbndMount::from_keys_and_dict(&keys, dict.as_ref())?;
 
     Ok(())
 }
@@ -95,6 +97,7 @@ fn recursive_read_files(
     }))
 }
 
+// FIXME
 fn prefix_and_parent_to_lowercase(path: &Path) -> (String, String) {
     let prefix = path
         .file_prefix()

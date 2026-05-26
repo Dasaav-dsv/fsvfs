@@ -382,6 +382,7 @@ dependencies = [
  "indexmap",
  "malachite",
  "memmap2",
+ "parking_lot",
  "rkyv",
  "smallvec",
  "steamlocate",

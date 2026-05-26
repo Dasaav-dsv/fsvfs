@@ -6,6 +6,30 @@ pub mod format;
 mod magic;
 
 pub use byte_order::ByteOrderExt;
+use color_eyre::eyre;
+use zerocopy::{BE, LE};
+
+use crate::dvdbnd::bhd5::format::File;
+
+#[derive(Debug)]
+pub enum FileAny<'a> {
+    LE(File<'a, LE>),
+    BE(File<'a, BE>),
+}
+
+impl<'a> FileAny<'a> {
+    pub fn try_ref_from_bytes(bytes: &'a [u8]) -> eyre::Result<Self> {
+        match File::<LE>::try_ref_from_bytes(bytes) {
+            Ok(le) => Ok(Self::LE(le)),
+            Err(err_le) => match File::<BE>::try_ref_from_bytes(bytes) {
+                Ok(be) => Ok(Self::BE(be)),
+                Err(err_be) => Err(eyre::eyre!(
+                    "LE ref error: {err_le}; BE ref error: {err_be}"
+                )),
+            },
+        }
+    }
+}
 
 pub fn has_bhd_extension<P: AsRef<Path>>(path: P) -> bool {
     path.as_ref()
