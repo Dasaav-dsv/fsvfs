@@ -41,7 +41,10 @@ pub fn mount(
             Some(game) => Some(Dictionary::from_dir_and_game(dict_dir, game)?),
             None => None,
         },
-        |t| info!("got dictionary ({:?}) ({t:.02?})", keys.game.as_deref()),
+        |t| info!(
+            "built dictionary for \"{}\" ({t:.02?})",
+            keys.game.as_deref().unwrap_or("unknown game")
+        ),
     );
 
     let mount = time!(
