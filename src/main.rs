@@ -11,12 +11,11 @@ mod dvdbnd;
 mod filesystem;
 mod hash;
 mod unaligned;
-#[cfg(windows)]
-mod winfsp;
 
 #[instrument(err)]
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
+    tracing_subscriber::fmt().init();
 
     let cli = Cli::try_parse()?;
     debug!("parsed CLI: {cli:?}");

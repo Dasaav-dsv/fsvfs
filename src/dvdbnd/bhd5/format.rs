@@ -20,6 +20,7 @@ pub enum Format {
     EldenRing,
 }
 
+#[allow(unused)]
 #[derive(Clone, Debug)]
 pub struct File<'a, O: ByteOrderExt> {
     pub format: Format,

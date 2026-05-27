@@ -9,12 +9,12 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 #[clap(after_help = r#"Examples (Linux):
-    fsvfs dvdbnd --root /xyz Game/Data1.bdt Game/Data1.bhd Game/Data2.bdt Game/Data2.bhd
-    fsvfs dvdbnd --root /xyz --game DarkSouls_PC DATA/dvdbnd0.bdt DATA/dvdbnd0.bhd5 DATA/dvdbnd1.bdt DATA/dvdbnd1.bhd5
+    fsvfs dvdbnd --mount /run/media/xyz Game/Data1.bdt Game/Data1.bhd Game/Data2.bdt Game/Data2.bhd
+    fsvfs dvdbnd --mount /run/media/xyz --game DarkSouls_PC DATA/dvdbnd0.bdt DATA/dvdbnd0.bhd5 DATA/dvdbnd1.bdt DATA/dvdbnd1.bhd5
 
 Examples (Windows):
-    fsvfs dvdbnd --root Z:\ Game\Data1.bdt Game\Data1.bhd Game\Data2.bdt Game\Data2.bhd
-    fsvfs dvdbnd --root Z:\ --game DarkSouls_PC DATA\dvdbnd0.bdt DATA\dvdbnd0.bhd5 DATA\dvdbnd1.bdt DATA\dvdbnd1.bhd5
+    fsvfs dvdbnd --mount Z:\ Game\Data1.bdt Game\Data1.bhd Game\Data2.bdt Game\Data2.bhd
+    fsvfs dvdbnd --mount Z:\ --game DarkSouls_PC DATA\dvdbnd0.bdt DATA\dvdbnd0.bhd5 DATA\dvdbnd1.bdt DATA\dvdbnd1.bhd5
 "#)]
 pub enum Command {
     /// Mount DVDBND archives as a read-only filesystem.
@@ -36,11 +36,11 @@ pub struct DvdbndArgs {
     #[arg(num_args(1..))]
     pub archive: Vec<String>,
 
-    /// Root at which to mount the filesystem (e.g. "/darksouls", or "Z:\").
+    /// Where to mount the filesystem (e.g. "/run/media/darksouls", or "Z:\").
     ///
-    /// Valid roots are OS-specific (and different between Linux and Windows).
+    /// Valid mounts are OS-specific (and different between Linux and Windows).
     #[arg(short, long)]
-    pub root: String,
+    pub mountpoint: String,
 
     /// String identifying which game's file name hashes and keys to use.
     ///
@@ -74,7 +74,7 @@ mod tests {
 
     use crate::cli::{Cli, Command};
 
-    const ROOT: &str = "/darksouls";
+    const MOUNTPOINT: &str = "/darksouls";
     const ARCHIVES: [&str; 4] = [
         "Game/Data1.bdt",
         "Game/Data1.bhd",
@@ -87,8 +87,8 @@ mod tests {
         let cli = Cli::parse_from([
             "fsvfs",
             "dvdbnd",
-            "-r",
-            ROOT,
+            "-m",
+            MOUNTPOINT,
             ARCHIVES[0],
             ARCHIVES[1],
             ARCHIVES[2],
@@ -100,7 +100,7 @@ mod tests {
             panic!("Wrong variant, expected `Dvdbnd`");
         };
 
-        assert_eq!(command.root, ROOT);
+        assert_eq!(command.mountpoint, MOUNTPOINT);
         assert_eq!(command.dict, None);
         assert_eq!(command.keys, None);
         assert_eq!(command.archive, ARCHIVES);
@@ -111,8 +111,8 @@ mod tests {
         let cli = Cli::parse_from([
             "fsvfs",
             "dvdbnd",
-            "-r",
-            ROOT,
+            "-m",
+            MOUNTPOINT,
             "-k",
             "ds3-keys",
             "-d",
@@ -128,7 +128,7 @@ mod tests {
             panic!("Wrong variant, expected `Dvdbnd`");
         };
 
-        assert_eq!(command.root, ROOT);
+        assert_eq!(command.mountpoint, MOUNTPOINT);
         assert_ne!(command.dict, None);
         assert_ne!(command.keys, None);
         assert_eq!(command.archive, ARCHIVES);

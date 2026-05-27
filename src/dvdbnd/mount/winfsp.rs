@@ -1,11 +1,24 @@
+use color_eyre::eyre;
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY};
 use winfsp::{
     U16CStr,
     filesystem::{FileInfo, FileSecurity, FileSystemContext, OpenFileInfo},
+    host::FileSystemHost,
+    service::FileSystemServiceBuilder,
+    winfsp_init_or_die,
 };
 use winfsp_sys::FILE_ACCESS_RIGHTS;
 
 pub struct FsContext;
+
+impl<F> DvdbndMount<F>
+where
+    F: DvdbndFilesystem + Send + Sync + 'static,
+{
+    pub fn mount(self, mountpoint: &str) -> eyre::Result<()> {
+        Ok(())
+    }
+}
 
 impl FileSystemContext for FsContext {
     type FileContext = ();

@@ -34,14 +34,17 @@ impl Paths<'_> {
     }
 }
 
-impl<'a> FromIterator<(u32, &'a str)> for Paths<'static> {
-    fn from_iter<T: IntoIterator<Item = (u32, &'a str)>>(iter: T) -> Self {
+impl<'a, S: AsRef<str>> FromIterator<(u32, S)> for Paths<'static>
+where
+    String: Extend<S>,
+{
+    fn from_iter<T: IntoIterator<Item = (u32, S)>>(iter: T) -> Self {
         let mut pos = 0;
         let (kv, str_store) = iter
             .into_iter()
             .map(|(inode, path)| {
                 let start = pos;
-                pos += path.len();
+                pos += path.as_ref().len();
                 ((inode, start..pos), path)
             })
             .unzip::<_, _, Vec<_>, String>();

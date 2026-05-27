@@ -7,7 +7,6 @@ use std::{
 };
 
 use color_eyre::eyre;
-use tracing::instrument;
 
 use crate::{
     cli::DvdbndArgs,
@@ -16,14 +15,13 @@ use crate::{
 
 mod bhd5;
 mod dict;
-mod filesystem;
+pub mod filesystem;
 mod keys;
 mod mount;
 mod path;
 
-#[instrument(skip(archives), err)]
 pub fn mount(
-    root: &str,
+    mountpoint: &str,
     archives: &[impl AsRef<Path>],
     game: Option<&str>,
     keys_dir: &Path,
@@ -39,13 +37,14 @@ pub fn mount(
     };
 
     let mount = DvdbndMount::from_keys_and_dict(&keys, dict.as_ref())?;
+    mount.mount(mountpoint)?;
 
     Ok(())
 }
 
 pub fn mount_from_args(args: DvdbndArgs) -> eyre::Result<()> {
     mount(
-        &args.root,
+        &args.mountpoint,
         &args.archive,
         args.game.as_deref(),
         args.keys.as_deref().unwrap_or("dvdbnd/Key").as_ref(),

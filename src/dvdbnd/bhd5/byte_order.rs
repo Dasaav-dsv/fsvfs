@@ -25,22 +25,16 @@ pub struct OneU32LE(One, Zero, Zero, Zero);
 pub struct OneU32BE(Zero, Zero, Zero, One);
 
 pub trait ByteOrderExt: zerocopy::byteorder::ByteOrder {
-    const IS_LE: bool;
-
     type BomValue: ByteOrderValue;
     type OneU32Value: ByteOrderValue;
 }
 
 impl ByteOrderExt for LE {
-    const IS_LE: bool = true;
-
     type BomValue = LittleEndian;
     type OneU32Value = OneU32LE;
 }
 
 impl ByteOrderExt for BE {
-    const IS_LE: bool = false;
-
     type BomValue = BigEndian;
     type OneU32Value = OneU32BE;
 }

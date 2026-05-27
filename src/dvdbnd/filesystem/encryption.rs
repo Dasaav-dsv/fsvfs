@@ -1,5 +1,3 @@
-use std::num::NonZero;
-
 use aes::cipher::{
     BlockCipherDecrypt, KeyInit,
     array::{AsArrayMut, AsArrayRef, AssocArraySize},
@@ -75,11 +73,15 @@ where
         let (start, end) = (range.start_offset.get(), range.end_offset.get());
         let len = end.wrapping_sub(start);
 
+        if len == 0 {
+            continue;
+        }
+
         if start > end || !len.is_multiple_of(BLOCK_SIZE as u64) {
             return Err(StoreError::BadRange(start, end));
         }
 
-        if len != 0 && start > file_size.saturating_sub(len) {
+        if start > file_size.saturating_sub(len) {
             return Err(StoreError::OobRange(
                 start,
                 end,

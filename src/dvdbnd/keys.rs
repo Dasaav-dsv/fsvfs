@@ -8,7 +8,6 @@ use std::{
 use color_eyre::eyre;
 use fxhash::FxHashMap;
 use smallvec::{SmallVec, smallvec_inline};
-use tracing::warn;
 use zerocopy::{BE, LE, TryFromBytes};
 
 use crate::{
@@ -50,8 +49,7 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
                 reader.read_exact(&mut header_bytes)
             };
 
-            if let Err(e) = res {
-                warn!("skipping {bnd_path:?}: {e}");
+            if res.is_err() {
                 return Ok(false);
             }
 

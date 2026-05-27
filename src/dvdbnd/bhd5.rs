@@ -1,4 +1,7 @@
-use std::path::Path;
+use color_eyre::eyre;
+use zerocopy::{BE, LE};
+
+use crate::dvdbnd::bhd5::format::File;
 
 mod byte_order;
 mod consts;
@@ -6,10 +9,6 @@ pub mod format;
 mod magic;
 
 pub use byte_order::ByteOrderExt;
-use color_eyre::eyre;
-use zerocopy::{BE, LE};
-
-use crate::dvdbnd::bhd5::format::File;
 
 #[derive(Debug)]
 pub enum FileAny<'a> {
@@ -31,12 +30,6 @@ impl<'a> FileAny<'a> {
     }
 }
 
-pub fn has_bhd_extension<P: AsRef<Path>>(path: P) -> bool {
-    path.as_ref()
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("bhd") || ext.eq_ignore_ascii_case("bhd5"))
-}
-
 pub fn strip_bhd_extension(name: &str) -> Option<&str> {
     let name = name.strip_suffix("5").unwrap_or(name);
 
@@ -52,23 +45,7 @@ pub fn strip_bhd_extension(name: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use crate::dvdbnd::bhd5::{has_bhd_extension, strip_bhd_extension};
-
-    #[test]
-    fn good_bhd_extension() {
-        assert!(has_bhd_extension("data1.bhd"));
-        assert!(has_bhd_extension("data1.bhd5"));
-        assert!(has_bhd_extension("data1.BHD"));
-        assert!(has_bhd_extension("data1.BHD5"));
-    }
-
-    #[test]
-    fn bad_bhd_extension() {
-        assert!(!has_bhd_extension("data1.bdt"));
-        assert!(!has_bhd_extension("data1.bdt5"));
-        assert!(!has_bhd_extension("data1.xyzbdt"));
-        assert!(!has_bhd_extension("data1.xyzbdt5"));
-    }
+    use crate::dvdbnd::bhd5::strip_bhd_extension;
 
     #[test]
     fn strip_good_bhd_extension() {

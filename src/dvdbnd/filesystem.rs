@@ -1,4 +1,4 @@
-use std::{borrow::Cow, mem, num::NonZero};
+use std::{borrow::Cow, num::NonZero};
 
 use color_eyre::eyre;
 use fxhash::FxBuildHasher;
@@ -110,7 +110,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
             })
             .collect::<Vec<_>>();
 
-        let hard_link_paths = files_by_bhd
+        let link_paths = files_by_bhd
             .iter()
             .flat_map(|(_, files)| files.as_slice())
             .zip(&hash_paths)
@@ -123,7 +123,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
                     .iter()
                     .map(|(path, file)| (path.as_str(), **file)),
             )
-            .with_hard_links(hard_link_paths.iter().cloned())
+            .with_links(link_paths)
             .finish();
 
         Ok(DvdbndRofs {
