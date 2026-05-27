@@ -10,12 +10,17 @@ mod crypto;
 mod dvdbnd;
 mod filesystem;
 mod hash;
+mod time;
 mod unaligned;
 
 #[instrument(err)]
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
-    tracing_subscriber::fmt().init();
+
+    tracing_subscriber::fmt()
+        .with_ansi(true)
+        .without_time()
+        .init();
 
     let cli = Cli::try_parse()?;
     debug!("parsed CLI: {cli:?}");

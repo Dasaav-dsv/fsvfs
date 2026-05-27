@@ -42,8 +42,11 @@ where
 
         #[cfg(target_os = "linux")]
         {
-            config.n_threads = Some(4);
             config.clone_fd = true;
+            config.n_threads = match std::thread::available_parallelism() {
+                Ok(threads) => Some(threads.get().min(16)),
+                Err(_) => None,
+            };
         }
 
         let umount_res = Arc::new((Mutex::new(None), Condvar::new()));
@@ -263,8 +266,6 @@ where
         reply.ok();
     }
 
-    // fn opendir(&self, _req: &Request, _ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {}
-
     fn readdir(
         &self,
         _req: &Request,
@@ -353,16 +354,6 @@ where
 
         reply.ok();
     }
-
-    // fn releasedir(
-    //     &self,
-    //     _req: &Request,
-    //     _ino: INodeNo,
-    //     _fh: FileHandle,
-    //     _flags: OpenFlags,
-    //     reply: ReplyEmpty,
-    // ) {
-    // }
 
     fn fsyncdir(
         &self,

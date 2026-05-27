@@ -20,6 +20,7 @@ malachite = { version = "0.9.1", default-features = false, features = [
 ] }
 memmap2 = "0.9.10"
 parking_lot = "0.12.5"
+rayon = "1.12.0"
 rkyv = { version = "0.8.16", optional = true }
 sharded-slab = "0.1.7"
 smallvec = { version = "1.15.1", features = [
@@ -29,7 +30,7 @@ smallvec = { version = "1.15.1", features = [
 ] }
 thiserror = "2.0.18"
 tracing = "0.1.44"
-tracing-subscriber = "0.3.23"
+tracing-subscriber = { version = "0.3.23", features = ["ansi"] }
 zerocopy = { version = "0.8.48", features = ["derive", "std"] }
 
 [target.'cfg(unix)'.dependencies]

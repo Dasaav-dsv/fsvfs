@@ -7,10 +7,12 @@ use std::{
 };
 
 use color_eyre::eyre;
+use tracing::info;
 
 use crate::{
     cli::DvdbndArgs,
     dvdbnd::{dict::Dictionary, keys::KeyProvider, mount::DvdbndMount, path::ArchivePaths},
+    time::time,
 };
 
 mod bhd5;
@@ -29,14 +31,24 @@ pub fn mount(
 ) -> eyre::Result<()> {
     let archives = ArchivePaths::new(archives);
 
-    let keys = KeyProvider::new(&archives, keys_dir).into_keys_for_game(game)?;
+    let keys = time!(
+        KeyProvider::new(&archives, keys_dir).into_keys_for_game(game)?,
+        |t| info!("matched BHD5 keys ({t:.02?})"),
+    );
 
-    let dict = match keys.game.as_deref() {
-        Some(game) => Some(Dictionary::from_dir_and_game(dict_dir, game)?),
-        None => None,
-    };
+    let dict = time!(
+        match keys.game.as_deref() {
+            Some(game) => Some(Dictionary::from_dir_and_game(dict_dir, game)?),
+            None => None,
+        },
+        |t| info!("got dictionary ({:?}) ({t:.02?})", keys.game.as_deref()),
+    );
 
-    let mount = DvdbndMount::from_keys_and_dict(&keys, dict.as_ref())?;
+    let mount = time!(
+        DvdbndMount::from_keys_and_dict(&keys, dict.as_ref())?,
+        |t| info!("built filesystem mount ({t:.02?})"),
+    );
+
     mount.mount(mountpoint)?;
 
     Ok(())
