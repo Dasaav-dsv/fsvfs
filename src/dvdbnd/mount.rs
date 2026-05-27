@@ -164,10 +164,6 @@ impl<F: DvdbndFilesystem> DvdbndMount<F> {
 
         let data_offset = usize::try_from(file.data_offset()).unwrap();
         let ptr = unsafe { mmap.as_mut_ptr().add(data_offset) };
-        let file_len = match file.unpadded_len() {
-            0 => file.len(),
-            len => len,
-        };
 
         if let Some(encryption_index) = file.encryption_index()
             && let lock = &self.locks[index]
@@ -178,13 +174,18 @@ impl<F: DvdbndFilesystem> DvdbndMount<F> {
             if lock.has_encrypted_flag() {
                 let encryption_store = self.fs.encryption_store();
 
-                let bytes = unsafe { slice::from_raw_parts_mut(ptr, file_len as usize) };
+                let bytes = unsafe { slice::from_raw_parts_mut(ptr, file.len() as usize) };
 
                 encryption_store.decrypt(encryption_index, bytes)?;
 
                 lock.clear_encrypted_flag();
             }
         }
+
+        let file_len = match file.unpadded_len() {
+            0 => file.len(),
+            len => len,
+        };
 
         let mut reader = self
             .readers
