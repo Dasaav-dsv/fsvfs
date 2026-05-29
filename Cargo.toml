@@ -54,7 +54,7 @@ winfsp = { version = "0.12.4", default-features = false, features = [
 ] }
 
 [features]
-default = []
+default = ["rkyv"]
 rkyv = ["dep:rkyv", "dep:bytecheck"]
 
 [dev-dependencies]

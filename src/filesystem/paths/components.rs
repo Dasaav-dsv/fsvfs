@@ -92,6 +92,7 @@ impl<'a, C> ComponentStr<'a, C> {
         Self(PhantomData, s.as_ref())
     }
 
+    #[inline]
     pub fn as_components(&self) -> &Components<&str, C>
     where
         C: Config,
@@ -100,13 +101,14 @@ impl<'a, C> ComponentStr<'a, C> {
     }
 }
 
-impl<S, C> Equivalent<ComponentStr<'_, C>> for Components<S, C>
+impl<S, C0, C1> Equivalent<ComponentStr<'_, C1>> for Components<S, C0>
 where
     S: AsRef<str>,
-    C: Config,
+    C0: Config,
+    C1: Config,
 {
     #[inline]
-    fn equivalent(&self, key: &ComponentStr<'_, C>) -> bool {
+    fn equivalent(&self, key: &ComponentStr<'_, C1>) -> bool {
         self == key.as_components()
     }
 }
@@ -162,15 +164,19 @@ where
     }
 }
 
-impl<S0, S1, C> PartialEq<Components<S1, C>> for Components<S0, C>
+impl<S0, S1, C1, C0> PartialEq<Components<S1, C1>> for Components<S0, C0>
 where
     S0: AsRef<str>,
     S1: AsRef<str>,
-    C: Config,
+    C0: Config,
+    C1: Config,
 {
     #[inline]
-    fn eq(&self, other: &Components<S1, C>) -> bool {
-        if const { matches!(C::NORMALIZATION, Normalize::AsciiCase) } {
+    fn eq(&self, other: &Components<S1, C1>) -> bool {
+        if const {
+            matches!(C0::NORMALIZATION, Normalize::AsciiCase)
+                | matches!(C1::NORMALIZATION, Normalize::AsciiCase)
+        } {
             match iter_compare(self, other, |a, b| match a.eq_ignore_ascii_case(b) {
                 true => ControlFlow::Continue(()),
                 false => ControlFlow::Break(()),
@@ -191,14 +197,19 @@ where
 {
 }
 
-impl<S0, S1, C> PartialOrd<Components<S1, C>> for Components<S0, C>
+impl<S0, S1, C1, C0> PartialOrd<Components<S1, C1>> for Components<S0, C0>
 where
     S0: AsRef<str>,
     S1: AsRef<str>,
-    C: Config,
+    C0: Config,
+    C1: Config,
 {
-    fn partial_cmp(&self, other: &Components<S1, C>) -> Option<Ordering> {
-        if const { matches!(C::NORMALIZATION, Normalize::AsciiCase) } {
+    #[inline]
+    fn partial_cmp(&self, other: &Components<S1, C1>) -> Option<Ordering> {
+        if const {
+            matches!(C0::NORMALIZATION, Normalize::AsciiCase)
+                | matches!(C1::NORMALIZATION, Normalize::AsciiCase)
+        } {
             match iter_compare(self, other, |a, b| match cmp_ignore_ascii_case(a, b) {
                 Ordering::Equal => ControlFlow::Continue(()),
                 non_eq => ControlFlow::Break(non_eq),
@@ -217,6 +228,7 @@ where
     S: AsRef<str>,
     C: Config,
 {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         if const { matches!(C::NORMALIZATION, Normalize::AsciiCase) } {
             match iter_compare(self, other, |a, b| match cmp_ignore_ascii_case(a, b) {
@@ -237,6 +249,7 @@ where
     S: AsRef<str>,
     C: Config,
 {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         const CHUNK_SIZE: usize = 16;
 
@@ -264,6 +277,7 @@ impl<C> PartialEq for ComponentStr<'_, C>
 where
     C: Config,
 {
+    #[inline]
     fn eq(&self, other: &ComponentStr<'_, C>) -> bool {
         self.as_components().eq(other.as_components())
     }
@@ -275,6 +289,7 @@ impl<C> PartialOrd for ComponentStr<'_, C>
 where
     C: Config,
 {
+    #[inline]
     fn partial_cmp(&self, other: &ComponentStr<'_, C>) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -284,6 +299,7 @@ impl<C> Ord for ComponentStr<'_, C>
 where
     C: Config,
 {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         self.as_components().cmp(other.as_components())
     }
@@ -293,6 +309,7 @@ impl<C> Hash for ComponentStr<'_, C>
 where
     C: Config,
 {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.as_components().hash(state);
     }

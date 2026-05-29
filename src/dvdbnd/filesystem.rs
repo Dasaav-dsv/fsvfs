@@ -270,7 +270,7 @@ impl DvdbndFile for File {
 #[cfg(feature = "rkyv")]
 impl DvdbndFilesystem for ArchivedDvdbndRofs {
     #[inline]
-    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile> {
+    fn as_rofs(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile> {
         &self.inner
     }
 

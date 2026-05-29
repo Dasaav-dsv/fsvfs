@@ -1,10 +1,8 @@
-use std::{fmt, ptr::NonNull};
-
-use hashbrown::HashMap;
+use std::{fmt, marker::PhantomData, ptr::NonNull};
 
 use crate::filesystem::{
     paths::components::{AsComponents, ComponentStr},
-    readonly::Config,
+    readonly::{Config, DefaultConfig, Normalize},
 };
 
 pub mod components;
@@ -16,16 +14,16 @@ cfg_select! {
     }
     _ => {
         use fxhash::FxBuildHasher;
-
-        use crate::filesystem::readonly::DefaultConfig;
+        use hashbrown::HashMap;
 
         pub struct Paths<'a, C = DefaultConfig> {
-            inner: RawPaths<'a, C>,
+            inner: RawPaths<'a>,
+            _marker: PhantomData<C>,
         }
 
-        struct RawPaths<'a, C> {
+        struct RawPaths<'a> {
             paths_by_inode: Vec<&'a str>,
-            inodes_by_path: HashMap<ComponentStr<'a, C>, u32, FxBuildHasher>,
+            inodes_by_path: HashMap<ComponentStr<'a, DefaultConfig>, u32, FxBuildHasher>,
             str_store: Option<NonNull<str>>,
         }
     }
@@ -36,18 +34,17 @@ impl<C> Paths<'_, C> {
         self.reborrow().paths_by_inode.get(inode as usize).cloned()
     }
 
-    pub fn inode_by_path<'a, S>(&self, path: &S) -> Option<u32>
+    pub fn inode_by_path(&self, path: &(impl AsComponents + ?Sized)) -> Option<u32>
     where
-        S: AsComponents + ?Sized,
         C: Config,
     {
         self.reborrow()
             .inodes_by_path
-            .get(path.as_components())
+            .get(path.as_components::<C>())
             .cloned()
     }
 
-    fn reborrow<'a>(&'a self) -> &'a RawPaths<'a, C> {
+    fn reborrow<'a>(&'a self) -> &'a RawPaths<'a> {
         &self.inner
     }
 }
@@ -92,7 +89,9 @@ where
             str_ranges[index] = start..pos;
         }
 
-        str_store.make_ascii_lowercase();
+        if const { matches!(C::NORMALIZATION, Normalize::AsciiCase) } {
+            str_store.make_ascii_lowercase();
+        }
 
         let str_store = NonNull::new(Box::into_raw(str_store.into_boxed_str())).unwrap();
 
@@ -106,7 +105,7 @@ where
         let inodes_by_path = paths_by_inode
             .iter()
             .zip(0..)
-            .map(|(path, inode)| (ComponentStr::new(*path), inode))
+            .map(|(path, inode)| (ComponentStr::<DefaultConfig>::new(*path), inode))
             .collect();
 
         Self {
@@ -115,6 +114,7 @@ where
                 inodes_by_path,
                 str_store: Some(str_store),
             },
+            _marker: PhantomData,
         }
     }
 }
@@ -144,11 +144,11 @@ impl<C> fmt::Debug for Paths<'_, C> {
 
 // SAFETY: we promise not to expose the fake 'static lifetime
 // or otherwise violate memory safety.
-unsafe impl<C> Send for RawPaths<'_, C> {}
+unsafe impl Send for RawPaths<'_> {}
 
 // SAFETY: we promise not to expose the fake 'static lifetime
 // or otherwise violate memory safety.
-unsafe impl<C> Sync for RawPaths<'_, C> {}
+unsafe impl Sync for RawPaths<'_> {}
 
 #[cfg(test)]
 mod tests {

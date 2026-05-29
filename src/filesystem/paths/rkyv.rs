@@ -21,16 +21,18 @@ use crate::filesystem::{
 
 #[derive(Archive, Serialize)]
 pub struct Paths<'a, C = DefaultConfig> {
-    pub(super) inner: RawPaths<'a, C>,
+    pub(super) inner: RawPaths<'a>,
+    pub(super) _marker: PhantomData<C>,
 }
 
 #[derive(Archive, Serialize)]
-pub(super) struct RawPaths<'a, C> {
+pub(super) struct RawPaths<'a> {
     #[rkyv(with = Map<InlineAsBox>)]
     pub(super) paths_by_inode: Vec<&'a str>,
 
     #[rkyv(with = MapKV<InlineAsBox, Identity>)]
-    pub(super) inodes_by_path: HashMap<ComponentStr<'a, C>, u32, BuildHasherDefault<FxHasher64>>,
+    pub(super) inodes_by_path:
+        HashMap<ComponentStr<'a, DefaultConfig>, u32, BuildHasherDefault<FxHasher64>>,
 
     #[rkyv(with = Skip)]
     pub(super) str_store: Option<NonNull<str>>,
@@ -42,15 +44,14 @@ impl<C> ArchivedPaths<'_, C> {
         Some(&**boxed)
     }
 
-    pub fn inode_by_path<'a, S>(&self, path: &S) -> Option<u32>
+    pub fn inode_by_path(&self, path: &(impl AsComponents + ?Sized)) -> Option<u32>
     where
-        S: AsComponents + ?Sized,
         C: Config,
     {
         let inode = self
             .inner
             .inodes_by_path
-            .get_with(path.as_components(), |components, key| {
+            .get_with(path.as_components::<C>(), |components, key| {
                 components == key.as_components()
             })
             .cloned()?;
