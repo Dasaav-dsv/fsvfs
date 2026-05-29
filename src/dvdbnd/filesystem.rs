@@ -19,7 +19,7 @@ use crate::{
 pub mod encryption;
 
 pub trait DvdbndFilesystem {
-    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile>;
+    fn as_rofs(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile>;
 
     fn encryption_store(&self) -> &impl EncryptionStore;
 }
@@ -229,7 +229,7 @@ impl Default for DvdbndRofsBuilder<'_, '_, '_> {
 
 impl DvdbndFilesystem for DvdbndRofs {
     #[inline]
-    fn filesystem(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile> {
+    fn as_rofs(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile> {
         &self.inner
     }
 

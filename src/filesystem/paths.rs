@@ -1,6 +1,5 @@
 use std::{fmt, ptr::NonNull};
 
-use fxhash::FxHashMap;
 use hashbrown::HashMap;
 
 use crate::filesystem::{
@@ -25,7 +24,7 @@ cfg_select! {
         }
 
         struct RawPaths<'a, C> {
-            paths_by_inode: FxHashMap<u32, &'a str>,
+            paths_by_inode: Vec<&'a str>,
             inodes_by_path: HashMap<ComponentStr<'a, C>, u32, FxBuildHasher>,
             str_store: Option<NonNull<str>>,
         }
@@ -34,7 +33,7 @@ cfg_select! {
 
 impl<C> Paths<'_, C> {
     pub fn path_by_inode(&self, inode: u32) -> Option<&str> {
-        self.reborrow().paths_by_inode.get(&inode).cloned()
+        self.reborrow().paths_by_inode.get(inode as usize).cloned()
     }
 
     pub fn inode_by_path<'a, S>(&self, path: &S) -> Option<u32>
@@ -64,7 +63,7 @@ where
         let iter_hint = iter.size_hint().0;
 
         let mut pos = 0;
-        let mut kv = Vec::with_capacity(iter_hint);
+        let mut str_ranges = vec![0..0usize; iter_hint];
         let mut str_store = String::with_capacity(iter_hint * 32);
 
         for (inode, path) in iter {
@@ -85,30 +84,30 @@ where
             pos += file.len();
             str_store += file;
 
-            kv.push((inode, start..pos));
+            let index = inode as usize;
+            if str_ranges.len() < index {
+                str_ranges.resize(index + 1, 0..0usize);
+            }
+
+            str_ranges[index] = start..pos;
         }
 
         str_store.make_ascii_lowercase();
 
         let str_store = NonNull::new(Box::into_raw(str_store.into_boxed_str())).unwrap();
 
-        let (mut paths_by_inode, mut inodes_by_path) = (
-            FxHashMap::with_capacity_and_hasher(kv.len(), Default::default()),
-            HashMap::with_capacity_and_hasher(kv.len(), Default::default()),
-        );
+        // SAFETY: materialized 'static references do not escape.
+        // `str_range` represents a valid UTF-8 range.
+        let paths_by_inode = str_ranges
+            .into_iter()
+            .map(|range| unsafe { str_store.as_ref().get_unchecked(range) })
+            .collect::<Vec<_>>();
 
-        for (inode, str_range) in kv {
-            // SAFETY: materialized 'static references do not escape.
-            // `str_range` represents a valid UTF-8 range.
-            let path = paths_by_inode
-                .entry(inode)
-                .or_insert_with(|| unsafe { str_store.as_ref().get_unchecked(str_range) });
-
-            inodes_by_path.insert(ComponentStr::new(*path), inode);
-        }
-
-        paths_by_inode.shrink_to_fit();
-        inodes_by_path.shrink_to_fit();
+        let inodes_by_path = paths_by_inode
+            .iter()
+            .zip(0..)
+            .map(|(path, inode)| (ComponentStr::new(*path), inode))
+            .collect();
 
         Self {
             inner: RawPaths {

@@ -4,7 +4,6 @@ use std::{
     ptr::NonNull,
 };
 
-use fxhash::FxHashMap;
 use hashbrown::HashMap;
 use rkyv::{
     Archive, Portable, Serialize, SerializeUnsized,
@@ -12,7 +11,7 @@ use rkyv::{
     bytecheck::CheckBytes,
     hash::FxHasher64,
     rancor::Fallible,
-    with::{ArchiveWith, Identity, InlineAsBox, MapKV, SerializeWith, Skip},
+    with::{ArchiveWith, Identity, InlineAsBox, Map, MapKV, SerializeWith, Skip},
 };
 
 use crate::filesystem::{
@@ -27,8 +26,8 @@ pub struct Paths<'a, C = DefaultConfig> {
 
 #[derive(Archive, Serialize)]
 pub(super) struct RawPaths<'a, C> {
-    #[rkyv(with = MapKV<Identity, InlineAsBox>)]
-    pub(super) paths_by_inode: FxHashMap<u32, &'a str>,
+    #[rkyv(with = Map<InlineAsBox>)]
+    pub(super) paths_by_inode: Vec<&'a str>,
 
     #[rkyv(with = MapKV<InlineAsBox, Identity>)]
     pub(super) inodes_by_path: HashMap<ComponentStr<'a, C>, u32, BuildHasherDefault<FxHasher64>>,
@@ -39,7 +38,7 @@ pub(super) struct RawPaths<'a, C> {
 
 impl<C> ArchivedPaths<'_, C> {
     pub fn path_by_inode(&self, inode: u32) -> Option<&str> {
-        let boxed = self.inner.paths_by_inode.get(&inode.into())?;
+        let boxed = self.inner.paths_by_inode.get(inode as usize)?;
         Some(&**boxed)
     }
 

@@ -11,7 +11,7 @@ use fuser::{
     AccessFlags, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags, Generation, INodeNo,
     KernelConfig, LockOwner, MountOption, OpenAccMode, OpenFlags, ReplyAttr, ReplyData,
     ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs,
-    Request, spawn_mount2,
+    ReplyXattr, Request, spawn_mount2,
 };
 use libc::{SEEK_CUR, SEEK_END, SEEK_SET};
 use parking_lot::{Condvar, Mutex};
@@ -124,7 +124,7 @@ where
     fn destroy(&mut self) {}
 
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        let fs = self.fs.filesystem();
+        let fs = self.fs.as_rofs();
 
         let Some(name) = name.to_str() else {
             reply.error(Errno::ENOSYS);
@@ -141,7 +141,7 @@ where
             return;
         };
 
-        let Ok(entry) = self.fs.filesystem().entry(ino, true) else {
+        let Ok(entry) = self.fs.as_rofs().entry(ino, true) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -152,7 +152,7 @@ where
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-        let Ok(entry) = self.fs.filesystem().entry(ino.0, true) else {
+        let Ok(entry) = self.fs.as_rofs().entry(ino.0, true) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -163,7 +163,7 @@ where
     }
 
     fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
-        let fs = self.fs.filesystem();
+        let fs = self.fs.as_rofs();
 
         let Ok(Entry::Link(ino)) = fs.entry(ino.0, false) else {
             reply.error(Errno::ENOENT);
@@ -187,7 +187,12 @@ where
         match self.make_reader(ino.0) {
             Ok(key) => {
                 let fh = FileHandle(key as u64);
-                reply.opened(fh, FopenFlags::FOPEN_DIRECT_IO | FopenFlags::FOPEN_NOFLUSH);
+                reply.opened(
+                    fh,
+                    FopenFlags::FOPEN_DIRECT_IO
+                        | FopenFlags::FOPEN_NOFLUSH
+                        | FopenFlags::FOPEN_KEEP_CACHE,
+                );
             }
             Err(e) => {
                 match &e {
@@ -197,6 +202,22 @@ where
                 }
                 warn!("could not open file: {e}");
             }
+        }
+    }
+
+    fn opendir(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+        if flags.acc_mode() != OpenAccMode::O_RDONLY {
+            reply.error(Errno::EROFS);
+            return;
+        }
+
+        match self.fs.as_rofs().entry(ino.0, false) {
+            Ok(Entry::Dir(_)) => reply.opened(
+                FileHandle(ino.0),
+                FopenFlags::FOPEN_NOFLUSH | FopenFlags::FOPEN_CACHE_DIR,
+            ),
+            Ok(_) => reply.error(Errno::ENOTDIR),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
@@ -217,13 +238,10 @@ where
         };
 
         if let Some(reader) = self.readers.get(key)
-            && let Some(reader) = reader.as_ref()
+            && let reader = &*reader
         {
-            let mut reader = reader.lock();
-            let reader = &mut *reader;
-
             self.seek(reader, SeekFrom::Start(offset));
-            let data = self.read(reader, size as usize);
+            let data = self.read(reader, size);
 
             reply.data(data);
         } else {
@@ -246,10 +264,27 @@ where
             return;
         };
 
-        if !self.readers.clear(key) {
-            reply.error(Errno::ESTALE);
-        } else {
+        if self.readers.remove(key) {
             reply.ok();
+        } else {
+            reply.error(Errno::ESTALE);
+        }
+    }
+
+    fn releasedir(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        fh: FileHandle,
+        _flags: OpenFlags,
+        reply: ReplyEmpty,
+    ) {
+        if ino.0 == fh.0
+            && let Ok(Entry::Dir(_)) = self.fs.as_rofs().entry(ino.0, false)
+        {
+            reply.ok();
+        } else {
+            reply.error(Errno::ESTALE);
         }
     }
 
@@ -272,7 +307,7 @@ where
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let fs = self.fs.filesystem();
+        let fs = self.fs.as_rofs();
 
         let Ok(Entry::Dir(range)) = fs.entry(ino.0, true) else {
             reply.error(Errno::ENOENT);
@@ -315,7 +350,7 @@ where
         offset: u64,
         mut reply: ReplyDirectoryPlus,
     ) {
-        let fs = self.fs.filesystem();
+        let fs = self.fs.as_rofs();
 
         let Ok(Entry::Dir(range)) = fs.entry(ino.0, true) else {
             reply.error(Errno::ENOENT);
@@ -370,17 +405,28 @@ where
         let blocks = self
             .bdts
             .iter()
-            .map(|bdt| bdt.size.div_ceil(BLOCK_SIZE as u64))
+            .map(|bdt| u64::div_ceil(bdt.size as u64, BLOCK_SIZE as u64))
             .sum();
 
         reply.statfs(blocks, 0, 0, files, 0, BLOCK_SIZE, MAX_NAME, BLOCK_SIZE);
     }
 
+    fn getxattr(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _name: &OsStr,
+        _size: u32,
+        reply: ReplyXattr,
+    ) {
+        reply.error(Errno::ENOTSUP);
+    }
+
     fn access(&self, _req: &Request, _ino: INodeNo, mask: AccessFlags, reply: ReplyEmpty) {
-        if mask.contains(AccessFlags::W_OK) {
-            reply.error(Errno::EACCES);
-        } else {
+        if !mask.contains(AccessFlags::W_OK) {
             reply.ok();
+        } else {
+            reply.error(Errno::EACCES);
         }
     }
 
@@ -410,11 +456,8 @@ where
         };
 
         if let Some(reader) = self.readers.get(key)
-            && let Some(reader) = reader.as_ref()
+            && let reader = &*reader
         {
-            let mut reader = reader.lock();
-            let reader = &mut *reader;
-
             let offset = self.seek(reader, pos);
 
             reply.offset(offset as i64);
