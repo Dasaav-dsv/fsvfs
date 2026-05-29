@@ -1,36 +1,121 @@
-use std::ptr::NonNull;
+use std::{
+    hash::{BuildHasherDefault, Hash, Hasher},
+    marker::PhantomData,
+    ptr::NonNull,
+};
 
 use fxhash::FxHashMap;
+use hashbrown::HashMap;
 use rkyv::{
-    Archive, Serialize,
-    with::{Identity, InlineAsBox, MapKV, Skip},
+    Archive, Portable, Serialize, SerializeUnsized,
+    boxed::{ArchivedBox, BoxResolver},
+    bytecheck::CheckBytes,
+    hash::FxHasher64,
+    rancor::Fallible,
+    with::{ArchiveWith, Identity, InlineAsBox, MapKV, SerializeWith, Skip},
+};
+
+use crate::filesystem::{
+    paths::components::{AsComponents, ComponentStr, Components},
+    readonly::{Config, DefaultConfig},
 };
 
 #[derive(Archive, Serialize)]
-pub struct Paths<'a> {
-    pub(super) inner: RawPaths<'a>,
+pub struct Paths<'a, C = DefaultConfig> {
+    pub(super) inner: RawPaths<'a, C>,
 }
 
 #[derive(Archive, Serialize)]
-pub(super) struct RawPaths<'a> {
+pub(super) struct RawPaths<'a, C> {
     #[rkyv(with = MapKV<Identity, InlineAsBox>)]
     pub(super) paths_by_inode: FxHashMap<u32, &'a str>,
 
     #[rkyv(with = MapKV<InlineAsBox, Identity>)]
-    pub(super) inodes_by_path: FxHashMap<&'a str, u32>,
+    pub(super) inodes_by_path: HashMap<ComponentStr<'a, C>, u32, BuildHasherDefault<FxHasher64>>,
 
     #[rkyv(with = Skip)]
     pub(super) str_store: Option<NonNull<str>>,
 }
 
-impl ArchivedPaths<'_> {
+impl<C> ArchivedPaths<'_, C> {
     pub fn path_by_inode(&self, inode: u32) -> Option<&str> {
         let boxed = self.inner.paths_by_inode.get(&inode.into())?;
         Some(&**boxed)
     }
 
-    pub fn inode_by_path(&self, path: &str) -> Option<u32> {
-        let inode = self.inner.inodes_by_path.get(path)?;
+    pub fn inode_by_path<'a, S>(&self, path: &S) -> Option<u32>
+    where
+        S: AsComponents + ?Sized,
+        C: Config,
+    {
+        let inode = self
+            .inner
+            .inodes_by_path
+            .get_with(path.as_components(), |components, key| {
+                components == key.as_components()
+            })
+            .cloned()?;
+
         Some(inode.into())
+    }
+}
+
+#[derive(CheckBytes, Portable)]
+#[repr(transparent)]
+pub struct ArchivedBoxComponentStr<C>(ArchivedBox<str>, PhantomData<C>);
+
+impl<C> ArchivedBoxComponentStr<C>
+where
+    C: Config,
+{
+    fn as_components(&self) -> &Components<ArchivedBox<str>, C> {
+        self.0.as_components()
+    }
+}
+
+impl<C> ArchiveWith<ComponentStr<'_, C>> for InlineAsBox {
+    type Archived = ArchivedBoxComponentStr<C>;
+    type Resolver = BoxResolver;
+
+    fn resolve_with(
+        field: &ComponentStr<'_, C>,
+        resolver: Self::Resolver,
+        out: rkyv::Place<Self::Archived>,
+    ) {
+        let out = unsafe { out.cast_unchecked::<ArchivedBox<str>>() };
+        ArchivedBox::resolve_from_ref(field.1, resolver, out);
+    }
+}
+
+impl<S, C> SerializeWith<ComponentStr<'_, C>, S> for InlineAsBox
+where
+    S: Fallible + ?Sized,
+    str: SerializeUnsized<S>,
+{
+    fn serialize_with(
+        field: &ComponentStr<'_, C>,
+        serializer: &mut S,
+    ) -> Result<Self::Resolver, S::Error> {
+        ArchivedBox::serialize_from_ref(field.1, serializer)
+    }
+}
+
+impl<C> PartialEq for ArchivedBoxComponentStr<C>
+where
+    C: Config,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.as_components() == other.as_components()
+    }
+}
+
+impl<C> Eq for ArchivedBoxComponentStr<C> where C: Config {}
+
+impl<C> Hash for ArchivedBoxComponentStr<C>
+where
+    C: Config,
+{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_components().hash(state);
     }
 }

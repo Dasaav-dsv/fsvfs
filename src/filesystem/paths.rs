@@ -1,6 +1,14 @@
 use std::{fmt, ptr::NonNull};
 
 use fxhash::FxHashMap;
+use hashbrown::HashMap;
+
+use crate::filesystem::{
+    paths::components::{AsComponents, ComponentStr},
+    readonly::Config,
+};
+
+pub mod components;
 
 cfg_select! {
     feature = "rkyv" => {
@@ -8,52 +16,85 @@ cfg_select! {
         pub use rkyv::*;
     }
     _ => {
-        pub struct Paths<'a> {
-            inner: RawPaths<'a>,
+        use fxhash::FxBuildHasher;
+
+        use crate::filesystem::readonly::DefaultConfig;
+
+        pub struct Paths<'a, C = DefaultConfig> {
+            inner: RawPaths<'a, C>,
         }
 
-        struct RawPaths<'a> {
+        struct RawPaths<'a, C> {
             paths_by_inode: FxHashMap<u32, &'a str>,
-            inodes_by_path: FxHashMap<&'a str, u32>,
+            inodes_by_path: HashMap<ComponentStr<'a, C>, u32, FxBuildHasher>,
             str_store: Option<NonNull<str>>,
         }
     }
 }
 
-impl Paths<'_> {
+impl<C> Paths<'_, C> {
     pub fn path_by_inode(&self, inode: u32) -> Option<&str> {
         self.reborrow().paths_by_inode.get(&inode).cloned()
     }
 
-    pub fn inode_by_path(&self, path: &str) -> Option<u32> {
-        self.reborrow().inodes_by_path.get(&path).cloned()
+    pub fn inode_by_path<'a, S>(&self, path: &S) -> Option<u32>
+    where
+        S: AsComponents + ?Sized,
+        C: Config,
+    {
+        self.reborrow()
+            .inodes_by_path
+            .get(path.as_components())
+            .cloned()
     }
 
-    fn reborrow<'a>(&'a self) -> &'a RawPaths<'a> {
+    fn reborrow<'a>(&'a self) -> &'a RawPaths<'a, C> {
         &self.inner
     }
 }
 
-impl<'a, S: AsRef<str>> FromIterator<(u32, S)> for Paths<'static>
+impl<'a, S, C> FromIterator<(u32, &'a [S])> for Paths<'static, C>
 where
+    S: AsRef<str>,
+    C: Config,
     String: Extend<S>,
 {
-    fn from_iter<T: IntoIterator<Item = (u32, S)>>(iter: T) -> Self {
+    fn from_iter<T: IntoIterator<Item = (u32, &'a [S])>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let iter_hint = iter.size_hint().0;
+
         let mut pos = 0;
-        let (kv, str_store) = iter
-            .into_iter()
-            .map(|(inode, path)| {
-                let start = pos;
-                pos += path.as_ref().len();
-                ((inode, start..pos), path)
-            })
-            .unzip::<_, _, Vec<_>, String>();
+        let mut kv = Vec::with_capacity(iter_hint);
+        let mut str_store = String::with_capacity(iter_hint * 32);
+
+        for (inode, path) in iter {
+            let start = pos;
+
+            let Some((file, dirs)) = path.split_last() else {
+                continue;
+            };
+
+            for dir in dirs {
+                let dir = dir.as_ref();
+                pos += dir.len() + 1;
+                str_store += dir;
+                str_store.push('/');
+            }
+
+            let file = file.as_ref();
+            pos += file.len();
+            str_store += file;
+
+            kv.push((inode, start..pos));
+        }
+
+        str_store.make_ascii_lowercase();
 
         let str_store = NonNull::new(Box::into_raw(str_store.into_boxed_str())).unwrap();
 
         let (mut paths_by_inode, mut inodes_by_path) = (
             FxHashMap::with_capacity_and_hasher(kv.len(), Default::default()),
-            FxHashMap::with_capacity_and_hasher(kv.len(), Default::default()),
+            HashMap::with_capacity_and_hasher(kv.len(), Default::default()),
         );
 
         for (inode, str_range) in kv {
@@ -63,7 +104,7 @@ where
                 .entry(inode)
                 .or_insert_with(|| unsafe { str_store.as_ref().get_unchecked(str_range) });
 
-            inodes_by_path.insert(*path, inode);
+            inodes_by_path.insert(ComponentStr::new(*path), inode);
         }
 
         paths_by_inode.shrink_to_fit();
@@ -79,7 +120,7 @@ where
     }
 }
 
-impl Drop for Paths<'_> {
+impl<C> Drop for Paths<'_, C> {
     fn drop(&mut self) {
         // No other references can outlive self:
         self.inner.paths_by_inode = Default::default();
@@ -94,21 +135,21 @@ impl Drop for Paths<'_> {
     }
 }
 
-impl fmt::Debug for Paths<'_> {
+impl<C> fmt::Debug for Paths<'_, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list()
-            .entries(self.reborrow().inodes_by_path.iter())
+            .entries(&self.reborrow().paths_by_inode)
             .finish()
     }
 }
 
 // SAFETY: we promise not to expose the fake 'static lifetime
 // or otherwise violate memory safety.
-unsafe impl Send for RawPaths<'_> {}
+unsafe impl<C> Send for RawPaths<'_, C> {}
 
 // SAFETY: we promise not to expose the fake 'static lifetime
 // or otherwise violate memory safety.
-unsafe impl Sync for RawPaths<'_> {}
+unsafe impl<C> Sync for RawPaths<'_, C> {}
 
 #[cfg(test)]
 mod tests {
@@ -127,14 +168,19 @@ mod tests {
     fn get_inode() {
         let paths = build_paths();
 
-        assert_eq!(paths.inode_by_path("c"), Some(2));
-        assert_eq!(paths.inode_by_path("d"), Some(3));
-        assert_eq!(paths.inode_by_path("e"), None);
+        assert_eq!(paths.inode_by_path(&"c"), Some(2));
+        assert_eq!(paths.inode_by_path(&"d"), Some(3));
+        assert_eq!(paths.inode_by_path(&"e"), None);
     }
 
     fn build_paths() -> Paths<'static> {
-        [(0, "a"), (1, "b"), (2, "c"), (3, "d")]
-            .into_iter()
-            .collect()
+        [
+            (0, ["a"].as_slice()),
+            (1, ["b"].as_slice()),
+            (2, ["c"].as_slice()),
+            (3, ["d"].as_slice()),
+        ]
+        .into_iter()
+        .collect()
     }
 }

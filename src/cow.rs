@@ -7,7 +7,7 @@ pub trait CowExt {
 impl CowExt for Cow<'_, str> {
     #[inline]
     fn make_ascii_lowercase(cow: &mut Self) {
-        if cow.as_bytes().chunks(4).any(|chunk| {
+        if cow.as_bytes().chunks(16).any(|chunk| {
             chunk
                 .iter()
                 .fold(false, |is, byte| is | byte.is_ascii_uppercase())

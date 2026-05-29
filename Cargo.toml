@@ -8,10 +8,12 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 aes = "0.9.0"
 base64 = "0.22.1"
+bytecheck = { version = "0.8.2", optional = true }
 clap = { version = "4.6.1", features = ["derive"] }
 color-eyre = "0.6.5"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 fxhash = "0.2.1"
+hashbrown = "0.17.1"
 indexmap = "2.14.0"
 malachite = { version = "0.9.1", default-features = false, features = [
     "malachite-nz",
@@ -21,7 +23,7 @@ malachite = { version = "0.9.1", default-features = false, features = [
 memmap2 = "0.9.10"
 parking_lot = "0.12.5"
 rayon = "1.12.0"
-rkyv = { version = "0.8.16", optional = true }
+rkyv = { version = "0.8.16", optional = true, features = ["hashbrown-0_17"] }
 sharded-slab = "0.1.7"
 smallvec = { version = "1.15.1", features = [
     "const_generics",
@@ -53,6 +55,7 @@ winfsp = { version = "0.12.4", default-features = false, features = [
 
 [features]
 default = []
+rkyv = ["dep:rkyv", "dep:bytecheck"]
 
 [dev-dependencies]
 steamlocate = "2.1.0"

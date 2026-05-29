@@ -136,9 +136,7 @@ where
             return;
         };
 
-        let path = [parent, name].join("/");
-
-        let Ok(ino) = fs.lookup(&path) else {
+        let Ok(ino) = fs.lookup([parent, name]) else {
             reply.error(Errno::ENOENT);
             return;
         };

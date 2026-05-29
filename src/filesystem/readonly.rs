@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     collections::VecDeque,
     fmt,
+    hint::cold_path,
     marker::PhantomData,
     mem,
     num::NonZero,
@@ -9,10 +10,9 @@ use std::{
 };
 
 use fxhash::FxHashMap;
-use smallvec::{SmallVec, smallvec_inline};
 use thiserror::Error;
 
-use crate::filesystem::paths::Paths;
+use crate::filesystem::paths::{Paths, components::AsComponents};
 
 #[derive(Debug, Error)]
 pub enum RofsError {
@@ -33,7 +33,7 @@ pub struct RofsBuilder<'a, 'b, T> {
 pub struct Rofs<'a, T, C: Config = DefaultConfig> {
     nodes: Box<[Node]>,
     files: Box<[T]>,
-    paths: Paths<'a>,
+    paths: Paths<'a, C>,
     _config: PhantomData<C>,
 }
 
@@ -47,14 +47,16 @@ pub enum Entry<'a, T> {
 #[derive(Clone, Copy, Debug)]
 pub struct DefaultConfig;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Normalize {
+    None,
+    AsciiCase,
+}
+
 pub trait Config {
     const INODE_ROOT: u64 = 1;
     const SEPARATORS: &[char] = &['/'];
-
-    #[inline]
-    fn normalize_component(component: &str) -> Cow<'_, str> {
-        Cow::Borrowed(component)
-    }
+    const NORMALIZATION: Normalize = Normalize::None;
 }
 
 impl Config for DefaultConfig {}
@@ -77,7 +79,9 @@ pub trait ReadOnlyFilesystem {
 
     fn path(&self, inode: u64) -> Result<&str, RofsError>;
 
-    fn lookup(&self, path: &str) -> Result<u64, RofsError>;
+    fn lookup<'a, S, const N: usize>(&self, path: impl Into<[&'a S; N]>) -> Result<u64, RofsError>
+    where
+        S: AsRef<str> + ?Sized + 'a;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -130,29 +134,25 @@ impl<T, C: Config> Rofs<'_, T, C> {
     fn new(files: Vec<(&str, T)>, links: Vec<(&str, &str)>) -> Rofs<'static, T, C> {
         let _ = Self::inode_from(files.len() + links.len());
 
-        let (mut components, files): (Vec<_>, Vec<_>) = files
+        let (mut file_paths, files): (Vec<_>, Vec<_>) = files
             .into_iter()
             .zip(0..)
             .map(|((path, file), data_index)| {
-                let components = normalize_components::<C>(path);
+                let path = normalize_path::<C>(path);
                 let file_index = FileNode { data_index };
-                ((components, file_index), file)
+                ((path, file_index), file)
             })
             .unzip();
 
-        components.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-        components.dedup_by(|(a, _), (b, _)| a == b);
+        file_paths
+            .sort_unstable_by(|(a, _), (b, _)| a.as_components::<C>().cmp(b.as_components::<C>()));
+        file_paths.dedup_by(|(a, _), (b, _)| a.as_components::<C>() == b.as_components::<C>());
 
         let files = files.into_boxed_slice();
 
         let links = links
             .into_iter()
-            .map(|(from, to)| {
-                (
-                    normalize_components::<C>(from),
-                    normalize_components::<C>(to),
-                )
-            })
+            .map(|(from, to)| (normalize_path::<C>(from), normalize_path::<C>(to)))
             .collect::<FxHashMap<_, _>>();
 
         enum TreeNode<'a> {
@@ -163,27 +163,27 @@ impl<T, C: Config> Rofs<'_, T, C> {
         let mut root = FxHashMap::default();
         let mut total = 1u64;
 
-        for (components, file_node) in
-            components
+        for (file_path, file_node) in
+            file_paths
                 .iter()
                 .enumerate()
-                .flat_map(|(index, (components, file_node))| {
-                    let link = links.get(components).map(|to| {
+                .flat_map(|(index, (path, file_node))| {
+                    let link = links.get(path).map(|to| {
                         let data_index = (files.len() + index).try_into().unwrap();
                         (to, FileNode { data_index })
                     });
 
-                    [(components, *file_node)].into_iter().chain(link)
+                    [(path, *file_node)].into_iter().chain(link)
                 })
         {
             let mut node = &mut root;
-            let mut iter = components.iter().peekable();
+            let mut components = file_path.as_components::<C>().iter().peekable();
 
-            while let Some(component) = iter.next() {
-                let next = node.entry(&**component).or_insert_with(|| {
+            while let Some(component) = components.next() {
+                let next = node.entry(component).or_insert_with(|| {
                     total += 1;
 
-                    match iter.peek() {
+                    match components.peek() {
                         Some(_) => TreeNode::Branch(Default::default()),
                         None => TreeNode::Leaf(file_node),
                     }
@@ -201,7 +201,7 @@ impl<T, C: Config> Rofs<'_, T, C> {
         let total = Self::inode_from(total);
 
         let mut nodes = Vec::<Node>::with_capacity(total as usize);
-        let mut paths = Vec::<(u32, SmallVec<[&str; 1]>)>::with_capacity(total as usize);
+        let mut paths = Vec::<(u32, Box<[&str]>)>::with_capacity(total as usize);
 
         let mut inode = 0;
         let mut child_index = NonZero::<u32>::MIN;
@@ -222,36 +222,33 @@ impl<T, C: Config> Rofs<'_, T, C> {
                         child_index = child_index.checked_add(child_count).unwrap();
 
                         let path = match paths.get(parent_index).map(|(_, parent)| &**parent) {
-                            None => smallvec_inline!["."],
-                            Some(&["."]) => smallvec_inline![*component],
+                            None => vec!["."],
+                            Some(&["."]) => vec![*component],
                             Some(parent) => parent.iter().cloned().chain([*component]).collect(),
                         };
                         let parent_index = paths.len();
 
                         queue.push_back((parent_index, branch));
 
-                        paths.push((inode, path));
+                        paths.push((inode, path.into_boxed_slice()));
                         inode += 1;
                     }
                     TreeNode::Leaf(file_node) => {
                         nodes.push(Node::File(*file_node));
 
-                        let path = match paths[parent_index].1.as_slice() {
-                            &["."] => smallvec_inline![*component],
+                        let path = match &*paths[parent_index].1 {
+                            &["."] => vec![*component],
                             parent => parent.iter().cloned().chain([*component]).collect(),
                         };
 
-                        paths.push((inode, path));
+                        paths.push((inode, path.into_boxed_slice()));
                         inode += 1;
                     }
                 }
             }
         }
 
-        let paths = paths
-            .iter()
-            .map(|(i, p)| (*i, p.join("/")))
-            .collect::<Paths>();
+        let paths = paths.iter().map(|(i, p)| (*i, &**p)).collect::<Paths<C>>();
 
         let mut nodes = nodes.into_boxed_slice();
 
@@ -259,7 +256,7 @@ impl<T, C: Config> Rofs<'_, T, C> {
             if let Node::File(FileNode { data_index }) = node
                 && let Some(link_index) = (*data_index as usize).checked_sub(files.len())
             {
-                let link_to = components[link_index].0.join("/");
+                let link_to = &file_paths[link_index].0;
                 let inode = paths
                     .inode_by_path(&link_to)
                     .expect("path normalization error");
@@ -402,9 +399,12 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     }
 
     #[inline]
-    fn lookup(&self, path: &str) -> Result<u64, RofsError> {
-        let path = normalize_path::<C>(path);
-        match self.paths.inode_by_path(&path) {
+    fn lookup<'a, S, const N: usize>(&self, path: impl Into<[&'a S; N]>) -> Result<u64, RofsError>
+    where
+        S: AsRef<str> + ?Sized + 'a,
+    {
+        let path = normallize_components::<_, C, _>(path.into());
+        match self.paths.inode_by_path(path.as_slice()) {
             Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
             None => Err(RofsError::NotFound),
         }
@@ -464,9 +464,12 @@ where
     }
 
     #[inline]
-    fn lookup(&self, path: &str) -> Result<u64, RofsError> {
-        let path = normalize_path::<C>(path);
-        match self.paths.inode_by_path(&path) {
+    fn lookup<'a, S, const N: usize>(&self, path: impl Into<[&'a S; N]>) -> Result<u64, RofsError>
+    where
+        S: AsRef<str> + ?Sized + 'a,
+    {
+        let path = normallize_components::<_, C, _>(path.into());
+        match self.paths.inode_by_path(path.as_slice()) {
             Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
             None => Err(RofsError::NotFound),
         }
@@ -474,31 +477,41 @@ where
 }
 
 #[inline]
-fn normalize_components<C: Config>(path: &str) -> SmallVec<[Cow<'_, str>; 4]> {
-    let mut components = SmallVec::<[Cow<str>; _]>::new();
+fn normalize_path<C: Config>(path: &str) -> Cow<'_, str> {
+    if path.is_empty() {
+        return Cow::Borrowed(".");
+    }
 
-    for component in path.split(C::SEPARATORS) {
-        match component {
-            "" | "." => {}
-            ".." => {
-                components.pop();
-            }
-            _ => {
-                components.push(C::normalize_component(component));
+    if !path.contains("..") {
+        Cow::Borrowed(path)
+    } else {
+        cold_path();
+
+        let mut components = vec![];
+
+        for component in path.split(C::SEPARATORS) {
+            match component {
+                "" | "." => {}
+                ".." => {
+                    components.pop();
+                }
+                _ => {
+                    components.push(component);
+                }
             }
         }
-    }
 
-    components
+        Cow::Owned(components.join("/"))
+    }
 }
 
-#[inline]
-fn normalize_path<C: Config>(path: &str) -> Cow<'_, str> {
-    match normalize_components::<C>(path).as_mut_slice() {
-        [] => Cow::Borrowed("."),
-        [one] => mem::take(one),
-        components => Cow::Owned(components.join("/")),
-    }
+#[inline(always)]
+fn normallize_components<S, C, const N: usize>(path: [&S; N]) -> [Cow<'_, str>; N]
+where
+    S: AsRef<str> + ?Sized,
+    C: Config,
+{
+    path.map(|sub| normalize_path::<C>(sub.as_ref()))
 }
 
 #[track_caller]
@@ -535,11 +548,10 @@ impl<T: fmt::Debug, C: Config> fmt::Debug for Rofs<'_, T, C> {
 
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Cow, fs, path::Path, sync::LazyLock};
+    use std::{fs, path::Path, sync::LazyLock};
 
     use crate::{
-        cow::CowExt,
-        filesystem::readonly::{Config, Entry, ReadOnlyFilesystem, Rofs, RofsBuilder},
+        filesystem::readonly::{Config, Entry, Normalize, ReadOnlyFilesystem, Rofs, RofsBuilder},
         hash::hash_path32,
     };
 
@@ -583,16 +595,16 @@ mod tests {
     where
         F: ReadOnlyFilesystem,
     {
-        assert_eq!(f.lookup(".").unwrap(), 1);
+        assert_eq!(f.lookup((".",)).unwrap(), 1);
         assert_eq!(f.path(1).unwrap(), ".");
 
         for &path in paths {
-            let inode = f.lookup(path).unwrap();
+            let inode = f.lookup((path,)).unwrap();
 
             let path2 = f.path(inode).unwrap();
-            assert_eq!(path, path2);
+            assert!(path.eq_ignore_ascii_case(path2));
 
-            let inode2 = f.lookup(path2).unwrap();
+            let inode2 = f.lookup((path2,)).unwrap();
             assert_eq!(inode, inode2);
         }
     }
@@ -603,7 +615,7 @@ mod tests {
         F::File: IntoIterator<Item: PartialEq<u32>> + Copy,
     {
         for &path in paths {
-            let inode = f.lookup(path).unwrap();
+            let inode = f.lookup((path,)).unwrap();
             let Entry::File(&hashes) = f.entry(inode, true).unwrap() else {
                 panic!("not a file");
             };
@@ -617,12 +629,7 @@ mod tests {
     struct BndConfig;
     impl Config for BndConfig {
         const SEPARATORS: &[char] = &['/', '\\'];
-
-        fn normalize_component(component: &str) -> Cow<'_, str> {
-            let mut component = Cow::Borrowed(component);
-            Cow::make_ascii_lowercase(&mut component);
-            component
-        }
+        const NORMALIZATION: Normalize = Normalize::AsciiCase;
     }
 
     type BndFs<'a> = Rofs<'a, [u32; 2], BndConfig>;

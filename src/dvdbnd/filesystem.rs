@@ -1,11 +1,10 @@
-use std::{borrow::Cow, num::NonZero};
+use std::num::NonZero;
 
 use color_eyre::eyre;
 use fxhash::FxBuildHasher;
 use indexmap::IndexMap;
 
 use crate::{
-    cow::CowExt,
     dvdbnd::{
         bhd5::{
             ByteOrderExt, FileAny as Bhd5FileAny,
@@ -14,7 +13,7 @@ use crate::{
         dict::Dictionary,
         filesystem::encryption::{EncryptionStore, store_encryption},
     },
-    filesystem::readonly::{Config, ReadOnlyFilesystem, Rofs, RofsBuilder},
+    filesystem::readonly::{Config, Normalize, ReadOnlyFilesystem, Rofs, RofsBuilder},
 };
 
 pub mod encryption;
@@ -313,10 +312,5 @@ impl DvdbndFile for ArchivedFile {
 
 impl Config for DvdbndConfig {
     const SEPARATORS: &[char] = &['/', '\\'];
-
-    fn normalize_component(component: &str) -> Cow<'_, str> {
-        let mut component = Cow::Borrowed(component);
-        Cow::make_ascii_lowercase(&mut component);
-        component
-    }
+    const NORMALIZATION: Normalize = Normalize::AsciiCase;
 }
