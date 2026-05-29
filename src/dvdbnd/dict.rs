@@ -1,10 +1,9 @@
-use std::{borrow::Cow, fs, path::Path};
+use std::{fs, path::Path};
 
 use color_eyre::eyre;
 use fxhash::FxHashMap;
 
 use crate::{
-    cow::CowExt,
     dvdbnd::{prefix_and_parent_to_lowercase, recursive_read_files},
     hash::{hash_path32, hash_path64},
 };
@@ -54,8 +53,7 @@ impl Dictionary {
     where
         F: Fn(&str) -> Option<H> + 'static,
     {
-        let mut bnd_name = Cow::Borrowed(bnd_name);
-        Cow::make_ascii_lowercase(&mut bnd_name);
+        let bnd_name = bnd_name.to_ascii_lowercase();
 
         self.by_bnd
             .get(&*bnd_name)
