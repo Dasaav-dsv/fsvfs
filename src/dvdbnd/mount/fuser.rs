@@ -151,7 +151,7 @@ where
             return;
         };
 
-        reply.data(&path.as_bytes());
+        reply.data(path.as_bytes());
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
