@@ -37,7 +37,7 @@ use crate::{
 #[cfg(unix)]
 mod fuser;
 #[cfg(windows)]
-mod winfsp;
+mod projfs;
 
 #[derive(Debug, Error)]
 pub enum MakeReaderError {
@@ -166,7 +166,7 @@ impl<F: DvdbndFilesystem> DvdbndMount<F> {
         })
     }
 
-    fn make_reader(&self, inode: u64) -> Result<usize, MakeReaderError> {
+    fn make_reader(&self, inode: u64) -> Result<FileReader, MakeReaderError> {
         let fs = self.fs.as_rofs();
 
         let entry = fs.entry(inode, true)?;
@@ -205,12 +205,15 @@ impl<F: DvdbndFilesystem> DvdbndMount<F> {
             len => len,
         };
 
-        let reader = FileReader {
+        Ok(FileReader {
             ptr: NonNull::new(ptr).unwrap(),
             pos: AtomicU32::new(0),
             len: file_len,
-        };
+        })
+    }
 
+    fn open(&self, inode: u64) -> Result<usize, MakeReaderError> {
+        let reader = self.make_reader(inode)?;
         self.readers
             .insert(reader)
             .ok_or(MakeReaderError::TooManyReaders)
@@ -220,8 +223,16 @@ impl<F: DvdbndFilesystem> DvdbndMount<F> {
         unsafe { reader.read(len).as_ref() }
     }
 
+    fn read_mut<'a>(&'a self, reader: &mut FileReader, len: u32) -> &'a [u8] {
+        unsafe { reader.read_mut(len).as_ref() }
+    }
+
     fn seek(&self, reader: &FileReader, pos: SeekFrom) -> u64 {
         reader.seek(pos)
+    }
+
+    fn seek_mut(&self, reader: &mut FileReader, pos: SeekFrom) -> u64 {
+        reader.seek_mut(pos)
     }
 }
 
@@ -273,6 +284,20 @@ impl FileReader {
         NonNull::slice_from_raw_parts(ptr, read as usize)
     }
 
+    fn read_mut(&mut self, len: u32) -> NonNull<[u8]> {
+        let self_pos = self.pos.get_mut();
+        let pos = *self_pos;
+
+        let avail = self.len.saturating_sub(pos);
+        let read = len.min(avail);
+
+        *self_pos += read;
+
+        let ptr = unsafe { self.ptr.add(pos as usize) };
+
+        NonNull::slice_from_raw_parts(ptr, read as usize)
+    }
+
     fn seek(&self, pos: SeekFrom) -> u64 {
         let mut new_pos = 0;
         self.pos
@@ -284,6 +309,20 @@ impl FileReader {
                 };
                 new_pos as u32
             });
+
+        new_pos
+    }
+
+    fn seek_mut(&mut self, pos: SeekFrom) -> u64 {
+        let self_pos = self.pos.get_mut();
+
+        let new_pos = match pos {
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::End(offset) => (self.len as u64).wrapping_add_signed(offset),
+            SeekFrom::Current(offset) => (*self_pos as u64).wrapping_add_signed(offset),
+        };
+
+        *self_pos = new_pos as u32;
 
         new_pos
     }

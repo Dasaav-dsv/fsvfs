@@ -2,19 +2,17 @@ use std::{
     ffi::OsStr,
     fs,
     io::{self, SeekFrom},
-    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use color_eyre::eyre;
 use fuser::{
-    AccessFlags, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags, Generation, INodeNo,
-    KernelConfig, LockOwner, MountOption, OpenAccMode, OpenFlags, ReplyAttr, ReplyData,
-    ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs,
-    ReplyXattr, Request, spawn_mount2,
+    AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags,
+    Generation, INodeNo, KernelConfig, LockOwner, MountOption, OpenAccMode, OpenFlags, ReplyAttr,
+    ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen,
+    ReplyStatfs, ReplyXattr, Request, spawn_mount2,
 };
 use libc::{SEEK_CUR, SEEK_END, SEEK_SET};
-use parking_lot::{Condvar, Mutex};
 use tracing::warn;
 
 use crate::{
@@ -23,6 +21,7 @@ use crate::{
         mount::{DvdbndMount, MakeReaderError},
     },
     filesystem::readonly::{Entry, ReadOnlyFilesystem},
+    thread::{OnInterrupt, run_until_interrupted},
 };
 
 const MAX_NAME: u32 = 255;
@@ -49,34 +48,11 @@ where
             };
         }
 
-        let umount_res = Arc::new((Mutex::new(None), Condvar::new()));
         let mount = spawn_mount2(self, mountpoint, &config)?;
 
-        ctrlc::set_handler({
-            let umount_res = umount_res.clone();
-            let mut mount = Some(mount);
-            move || {
-                if let Some(mount) = mount.take() {
-                    let res = mount.umount_and_join();
-                    let (lock, cvar) = &*umount_res;
+        run_until_interrupted(mount)?;
 
-                    let mut umount_res = lock.lock();
-                    *umount_res = Some(res);
-
-                    cvar.notify_all();
-                }
-            }
-        })?;
-
-        let (lock, cvar) = &*umount_res;
-        let mut umount_res = lock.lock();
-        loop {
-            if let Some(res) = umount_res.take() {
-                return Ok(res?);
-            }
-
-            cvar.wait(&mut umount_res);
-        }
+        Ok(())
     }
 
     fn file_attr<T: DvdbndFile>(&self, ino: INodeNo, entry: &Entry<'_, T>) -> FileAttr {
@@ -184,7 +160,7 @@ where
             return;
         }
 
-        match self.make_reader(ino.0) {
+        match self.open(ino.0) {
             Ok(key) => {
                 let fh = FileHandle(key as u64);
                 reply.opened(
@@ -329,7 +305,7 @@ where
                 continue;
             };
 
-            let name = match path.rsplit_once("/") {
+            let name = match path.rsplit_once('/') {
                 Some((_, name)) => name,
                 None => path,
             };
@@ -372,7 +348,7 @@ where
                 continue;
             };
 
-            let name = match path.rsplit_once("/") {
+            let name = match path.rsplit_once('/') {
                 Some((_, name)) => name,
                 None => path,
             };
@@ -472,5 +448,14 @@ fn file_type<T>(e: &Entry<'_, T>) -> FileType {
         Entry::Dir(_) => FileType::Directory,
         Entry::File(_) => FileType::RegularFile,
         Entry::Link(_) => FileType::Symlink,
+    }
+}
+
+impl OnInterrupt for BackgroundSession {
+    type Error = eyre::Error;
+
+    fn on_interrupt(self) -> Result<(), Self::Error> {
+        self.umount_and_join()?;
+        Ok(())
     }
 }

@@ -9,12 +9,12 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 #[clap(after_help = r#"Examples (Linux):
-    fsvfs dvdbnd --mount /run/media/xyz Game/Data1.bdt Game/Data1.bhd Game/Data2.bdt Game/Data2.bhd
-    fsvfs dvdbnd --mount /run/media/xyz --game DarkSouls_PC DATA/dvdbnd0.bdt DATA/dvdbnd0.bhd5 DATA/dvdbnd1.bdt DATA/dvdbnd1.bhd5
+    fsvfs dvdbnd --mount /run/media/xyz Game/Data1.bhd Game/Data2.bhd
+    fsvfs dvdbnd --mount /run/media/xyz --game DarkSouls_PC DATA/dvdbnd0.bhd5 DATA/dvdbnd1.bhd5
 
 Examples (Windows):
-    fsvfs dvdbnd --mount Z:\ Game\Data1.bdt Game\Data1.bhd Game\Data2.bdt Game\Data2.bhd
-    fsvfs dvdbnd --mount Z:\ --game DarkSouls_PC DATA\dvdbnd0.bdt DATA\dvdbnd0.bhd5 DATA\dvdbnd1.bdt DATA\dvdbnd1.bhd5
+    fsvfs dvdbnd --mount Z:\foo\bar Game\Data1.bhd Game\Data2.bhd
+    fsvfs dvdbnd --mount Z:\foo\bar --game DarkSouls_PC DATA\dvdbnd0.bhd5 DATA\dvdbnd1.bhd5
 "#)]
 pub enum Command {
     /// Mount DVDBND archives as a read-only filesystem.
@@ -36,9 +36,9 @@ pub struct DvdbndArgs {
     #[arg(num_args(1..))]
     pub archive: Vec<String>,
 
-    /// Where to mount the filesystem (e.g. "/run/media/darksouls", or "Z:\").
+    /// Where to mount the filesystem (e.g. "/run/media/darksouls", or "Z:\darksouls").
     ///
-    /// Valid mounts are OS-specific (and different between Linux and Windows).
+    /// The mount point must be an existing, empty directory.
     #[arg(short, long)]
     pub mountpoint: String,
 

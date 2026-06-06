@@ -1,6 +1,6 @@
 use clap::Parser;
 use color_eyre::eyre;
-use tracing::{debug, instrument};
+use tracing::debug;
 
 use crate::cli::{Cli, Command};
 
@@ -9,10 +9,13 @@ mod crypto;
 mod dvdbnd;
 mod filesystem;
 mod hash;
+mod thread;
 mod time;
 mod unaligned;
 
-#[instrument(err)]
+#[cfg(windows)]
+mod runas;
+
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
 
