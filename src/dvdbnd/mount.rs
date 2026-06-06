@@ -104,7 +104,7 @@ impl DvdbndMount<DvdbndRofs> {
                 .iter()
                 .zip(&files)
                 .map(|((path, _), bytes)| {
-                    let file = FileAny::try_ref_from_bytes(&bytes)?;
+                    let file = FileAny::try_ref_from_bytes(bytes)?;
 
                     // FIXME
                     let name = path

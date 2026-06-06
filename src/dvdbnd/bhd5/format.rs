@@ -199,7 +199,7 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
         bytes: &'a [u8],
         header: &Header<O>,
         f: impl Fn(Vec<&'a [E]>) -> Buckets<'a, O>,
-    ) -> Result<(Buckets<'a, O>, Vec<Option<&'a Encryption<O>>>), TryRefFileError<O>>
+    ) -> Result<RefBuckets<'a, O>, TryRefFileError<O>>
     where
         B: BucketHeader + TryFromBytes + Immutable,
         E: FileEntry<O> + TryFromBytes + Immutable + 'a,
@@ -347,11 +347,13 @@ impl<'a, O: ByteOrderExt> File<'a, O> {
     }
 }
 
-fn try_ref_slice_helper<'a, B: TryFromBytes + Immutable>(
-    bytes: &'a [u8],
+type RefBuckets<'a, O> = (Buckets<'a, O>, Vec<Option<&'a Encryption<O>>>);
+
+fn try_ref_slice_helper<B: TryFromBytes + Immutable>(
+    bytes: &[u8],
     count: impl TryInto<usize>,
     offset: impl TryInto<usize>,
-) -> Option<&'a [B]> {
+) -> Option<&[B]> {
     let count = count.try_into().ok()?;
     let offset = offset.try_into().ok()?;
 

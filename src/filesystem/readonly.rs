@@ -299,7 +299,7 @@ impl<T, C: Config> Rofs<'_, T, C> {
                 let data_index = data_index as usize;
 
                 match data_index.checked_sub(self.files.len()) {
-                    None => Entry::File(&self.files[data_index as usize]),
+                    None => Entry::File(&self.files[data_index]),
                     Some(inode) => {
                         let link_inode = (inode as u64).wrapping_add(C::INODE_ROOT);
                         if !follow_links {
@@ -334,7 +334,7 @@ where
                 let data_index = data_index.to_native() as usize;
 
                 match data_index.checked_sub(self.files.len()) {
-                    None => Entry::File(&self.files[data_index as usize]),
+                    None => Entry::File(&self.files[data_index]),
                     Some(inode) => {
                         let link_inode = (inode as u64).wrapping_add(C::INODE_ROOT);
                         if !follow_links {

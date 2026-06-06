@@ -93,7 +93,7 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
             {
                 for (_, pem_path) in pem_paths
                     .iter()
-                    .filter(|(pem_name, _)| &**pem_name == &**name)
+                    .filter(|(pem_name, _)| **pem_name == **name)
                 {
                     let key = match cache.get(&**pem_path) {
                         Some(key) => key,
@@ -104,7 +104,7 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
                         }
                     };
 
-                    if f(bhd_path, Some(&key))? {
+                    if f(bhd_path, Some(key))? {
                         by_path.insert(bhd_path, Some(key.clone()));
                         game.get_or_insert(game_name);
                     }

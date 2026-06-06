@@ -44,7 +44,7 @@ pub trait ByteOrderValue:
 {
 }
 
-impl<T: ?Sized> ByteOrderValue for T where
+impl<T> ByteOrderValue for T where
     T: Clone + Copy + fmt::Debug + KnownLayout + Immutable + Unaligned + TryFromBytes
 {
 }

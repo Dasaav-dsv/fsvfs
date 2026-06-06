@@ -599,11 +599,8 @@ impl<F: DvdbndFilesystem> OnInterrupt for Arc<MountContext<F>> {
         }
 
         let mut is_waiting = false;
-        loop {
-            let Err(e) = fs::remove_dir_all(mountpoint.as_str()) else {
-                break;
-            };
 
+        while let Err(e) = fs::remove_dir_all(mountpoint.as_str()) {
             // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION or a virtualization error.
             if !matches!(e.raw_os_error(), Some(32) | Some(33) | Some(369)) {
                 return Err(e.into());

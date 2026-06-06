@@ -177,13 +177,13 @@ where
             matches!(C0::NORMALIZATION, Normalize::AsciiCase)
                 | matches!(C1::NORMALIZATION, Normalize::AsciiCase)
         } {
-            match iter_compare(self, other, |a, b| match a.eq_ignore_ascii_case(b) {
-                true => ControlFlow::Continue(()),
-                false => ControlFlow::Break(()),
-            }) {
-                ControlFlow::Continue(Ordering::Equal) => true,
-                _ => false,
-            }
+            matches!(
+                iter_compare(self, other, |a, b| match a.eq_ignore_ascii_case(b) {
+                    true => ControlFlow::Continue(()),
+                    false => ControlFlow::Break(()),
+                }),
+                ControlFlow::Continue(Ordering::Equal)
+            )
         } else {
             self.iter().eq(other)
         }

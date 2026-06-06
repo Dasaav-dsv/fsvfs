@@ -25,7 +25,7 @@ fn normalize_suffix_as_bytes(s: &str) -> Option<&[u8]> {
     let bytes = without_root.as_bytes();
     let (first, rest) = bytes.split_first()?;
 
-    (!rest.is_empty()).then(|| match *first {
+    (!rest.is_empty()).then_some(match *first {
         b'/' | b'\\' => rest,
         _ => bytes,
     })
