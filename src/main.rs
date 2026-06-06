@@ -1,3 +1,6 @@
+#[cfg(feature = "libsais_omp")]
+extern crate openmp_sys;
+
 use clap::Parser;
 use color_eyre::eyre;
 use tracing::{debug, instrument};
@@ -9,7 +12,9 @@ mod crypto;
 mod dvdbnd;
 mod filesystem;
 mod hash;
+mod libsais;
 mod time;
+mod trie;
 mod unaligned;
 
 #[instrument(err)]

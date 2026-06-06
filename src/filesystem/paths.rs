@@ -1,8 +1,11 @@
-use std::{fmt, marker::PhantomData, ptr::NonNull};
+use std::{fmt, iter, marker::PhantomData, ptr::NonNull};
 
-use crate::filesystem::{
-    paths::components::{AsComponents, ComponentStr},
-    readonly::{Config, DefaultConfig, Normalize},
+use crate::{
+    filesystem::{
+        paths::components::{AsComponents, ComponentStr},
+        readonly::{Config, DefaultConfig, Normalize},
+    },
+    time::time, trie::CompressedTrie,
 };
 
 pub mod components;
@@ -78,15 +81,16 @@ where
             }
 
             let file = file.as_ref();
-            pos += file.len();
+            pos += file.len() + 1;
             str_store += file;
+            str_store.push('\0');
 
             let index = inode as usize;
             if str_ranges.len() < index {
                 str_ranges.resize(index + 1, 0..0usize);
             }
 
-            str_ranges[index] = start..pos;
+            str_ranges[index] = start..pos - 1;
         }
 
         if const { matches!(C::NORMALIZATION, Normalize::AsciiCase) } {
@@ -101,6 +105,16 @@ where
             .into_iter()
             .map(|range| unsafe { str_store.as_ref().get_unchecked(range) })
             .collect::<Vec<_>>();
+
+        //
+        let _trie = CompressedTrie::new(
+            paths_by_inode
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (*s, i as u32)),
+            None,
+        );
+        //
 
         let inodes_by_path = paths_by_inode
             .iter()

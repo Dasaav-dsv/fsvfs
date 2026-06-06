@@ -96,33 +96,39 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
             files_by_bhd.push((bnd_name, files?));
         }
 
-        let hash_paths = files_by_bhd
-            .iter()
-            .flat_map(|(bnd, files)| {
-                files.iter().map(move |(hash, _, file)| {
-                    if *hash <= u32::MAX as u64 {
-                        (format!(".{bnd}/{:02x}/{hash:08x}", hash >> 24), file)
-                    } else {
-                        (format!(".{bnd}/{:02x}/{hash:16x}", hash >> 56), file)
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
+        // let hash_paths = files_by_bhd
+        //     .iter()
+        //     .flat_map(|(bnd, files)| {
+        //         files.iter().map(move |(hash, _, file)| {
+        //             if *hash <= u32::MAX as u64 {
+        //                 (format!(".{bnd}/{:02x}/{hash:08x}", hash >> 24), file)
+        //             } else {
+        //                 (format!(".{bnd}/{:02x}/{hash:16x}", hash >> 56), file)
+        //             }
+        //         })
+        //     })
+        //     .collect::<Vec<_>>();
 
-        let link_paths = files_by_bhd
-            .iter()
-            .flat_map(|(_, files)| files.as_slice())
-            .zip(&hash_paths)
-            .filter_map(|((_, to, _), (from, _))| Some(from.as_str()).zip(*to))
-            .collect::<Vec<_>>();
+        // let link_paths = files_by_bhd
+        //     .iter()
+        //     .flat_map(|(_, files)| files.as_slice())
+        //     .zip(&hash_paths)
+        //     .filter_map(|((_, to, _), (from, _))| Some(from.as_str()).zip(*to))
+        //     .collect::<Vec<_>>();
 
         let inner = RofsBuilder::new()
             .with_files(
-                hash_paths
-                    .iter()
-                    .map(|(path, file)| (path.as_str(), **file)),
+                files_by_bhd
+                    .into_iter()
+                    .flat_map(|(_, files)| files)
+                    .filter_map(|(_, path, file)| Some((path?, file))),
             )
-            .with_links(link_paths)
+            // .with_files(
+            //     hash_paths
+            //         .iter()
+            //         .map(|(path, file)| (path.as_str(), **file)),
+            // )
+            // .with_links(link_paths)
             .finish();
 
         Ok(DvdbndRofs {
