@@ -1,6 +1,6 @@
 Measure-Command {
-    Get-ChildItem -Path G:\fsvfs\eldenring -Exclude .* | % {
-        Copy-Item -Path $_.FullName -Destination G:\fsvfs\eldenring-unpacked -Recurse
+    Get-ChildItem -Path G:\fsvfs\eldenring -Exclude .* -Name | % {
+        robocopy G:\fsvfs\eldenring\$_ G:\fsvfs\eldenring-unpacked\$_ /e /mt
     }
 }
 | Select-Object -ExpandProperty TotalSeconds

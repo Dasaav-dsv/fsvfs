@@ -2,6 +2,7 @@ use aes::cipher::{
     BlockCipherDecrypt, KeyInit,
     array::{AsArrayMut, AsArrayRef, AssocArraySize},
 };
+use futures_util::TryFutureExt;
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
 
@@ -35,11 +36,19 @@ pub enum DecryptError {
 }
 
 pub trait EncryptionStore {
-    fn decrypt(&self, index: usize, bytes: &mut [u8]) -> Result<(), DecryptError>;
+    fn decrypt(
+        &self,
+        index: usize,
+        bytes: &mut [u8],
+    ) -> Result<impl Future<Output = Result<(), DecryptError>>, DecryptError>;
 }
 
 impl<T: AsRef<[u8]>> EncryptionStore for T {
-    fn decrypt(&self, index: usize, bytes: &mut [u8]) -> Result<(), DecryptError> {
+    fn decrypt(
+        &self,
+        index: usize,
+        bytes: &mut [u8],
+    ) -> Result<impl Future<Output = Result<(), DecryptError>>, DecryptError> {
         let store = self
             .as_ref()
             .get(index..)
@@ -48,7 +57,7 @@ impl<T: AsRef<[u8]>> EncryptionStore for T {
         let (header, data) =
             Header::try_ref_from_prefix(store).map_err(|_| DecryptError::Index(index))?;
 
-        header.decrypt(index, bytes, data)
+        Ok(header.decrypt(index, bytes, data))
     }
 }
 
@@ -178,26 +187,30 @@ struct Range {
 }
 
 impl Header {
-    fn decrypt(&self, index: usize, bytes: &mut [u8], data: &[u8]) -> Result<(), DecryptError> {
+    fn decrypt(
+        &self,
+        index: usize,
+        bytes: &mut [u8],
+        data: &[u8],
+    ) -> impl Future<Output = Result<(), DecryptError>> {
         match self {
             Self::Aes128EcbNone(Aes128(aes)) => {
                 let key = aes::Aes128::new(aes.key.as_array_ref());
 
-                aes.decrypt_blocks(&key, bytes, data).map_err(|e| match e {
-                    AesError::Range => DecryptError::Index(index),
-                    AesError::Block(offset) => DecryptError::Block(offset),
-                })?;
+                aes.decrypt_blocks(key, bytes, data)
+                    .map_err(move |e| match e {
+                        AesError::Range => DecryptError::Index(index),
+                        AesError::Block(offset) => DecryptError::Block(offset),
+                    })
             }
         }
-
-        Ok(())
     }
 }
 
 impl<const N: usize> Aes<N> {
-    fn decrypt_blocks<C: BlockCipherDecrypt>(
+    async fn decrypt_blocks<C: BlockCipherDecrypt>(
         &self,
-        cipher: &C,
+        cipher: C,
         bytes: &mut [u8],
         data: &[u8],
     ) -> Result<(), AesError>
@@ -218,12 +231,15 @@ impl<const N: usize> Aes<N> {
                 AesError::Block(last_offset as u32)
             })?;
 
-            for block in range
-                .chunks_exact_mut(N)
-                .filter_map(<[_]>::as_mut_array::<N>)
-            {
-                cipher.decrypt_block(block.as_array_mut());
+            async {
+                for block in range
+                    .chunks_exact_mut(N)
+                    .filter_map(<[_]>::as_mut_array::<N>)
+                {
+                    cipher.decrypt_block(block.as_array_mut());
+                }
             }
+            .await
         }
 
         Ok(())

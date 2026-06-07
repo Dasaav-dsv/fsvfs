@@ -16,7 +16,7 @@ use std::{
 };
 
 use color_eyre::eyre::{self, eyre};
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt, TryStreamExt, stream};
 use fxhash::FxBuildHasher;
 use papaya::HashMap as PapayaMap;
 use parking_lot::RwLock;
@@ -325,7 +325,7 @@ where
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
-            let datastream_id = callbackdata.DataStreamId;
+            let stream_id = callbackdata.DataStreamId;
 
             Self::call_async(callbackdata, async move |context| {
                 let alignment = context.instance_alignment()?;
@@ -337,15 +337,18 @@ where
 
                 let slice = res.map_err(|e| WindowsError::new(E_FAIL, e.to_string()))?;
 
-                unsafe {
-                    PrjWriteFileData(
-                        context.context,
-                        &datastream_id,
-                        slice.as_ptr() as *const c_void,
-                        0,
-                        slice.len() as u32,
-                    )
-                }
+                const CHUNK_SIZE: usize = 4096 * 16;
+
+                stream::iter(slice.chunks(CHUNK_SIZE).enumerate())
+                    .map(Ok)
+                    .try_for_each(async |(i, chunk)| {
+                        let ptr = chunk.as_ptr() as *const c_void;
+                        let offset = (i * CHUNK_SIZE) as u64;
+                        let len = chunk.len() as u32;
+
+                        unsafe { PrjWriteFileData(context.context, &stream_id, ptr, offset, len) }
+                    })
+                    .await
             })
             .ok()
         })
