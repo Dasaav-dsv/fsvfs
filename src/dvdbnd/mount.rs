@@ -197,7 +197,7 @@ impl Bdt {
                 ManuallyDrop::new(File::from_raw_fd(self.file))
             }
             windows => unsafe {
-                use compio::driver::FromRawHandle;
+                use std::os::windows::prelude::FromRawHandle;
                 ManuallyDrop::new(File::from_raw_handle(self.file))
             },
         }
