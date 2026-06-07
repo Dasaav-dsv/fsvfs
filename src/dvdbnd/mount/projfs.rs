@@ -1,5 +1,4 @@
 use std::{
-    alloc::{Layout, alloc, dealloc},
     any::type_name_of_val,
     ffi::c_void,
     fs,
@@ -9,7 +8,6 @@ use std::{
     ops::Range,
     os::windows::fs::OpenOptionsExt,
     panic::{self, AssertUnwindSafe},
-    ptr,
     sync::{
         Arc, Weak,
         atomic::{AtomicPtr, AtomicUsize, Ordering},
@@ -18,6 +16,12 @@ use std::{
 };
 
 use color_eyre::eyre::{self, eyre};
+use compio::{
+    buf::{IoBuf, buf_try},
+    io::AsyncReadAt,
+    runtime::spawn,
+};
+use futures_util::FutureExt;
 use fxhash::FxBuildHasher;
 use papaya::HashMap as PapayaMap;
 use parking_lot::RwLock;
@@ -26,8 +30,8 @@ use windows::{
     Win32::{
         Foundation::{
             E_ABORT, E_FAIL, E_INVALIDARG, ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND,
-            ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_OPERATION, ERROR_OFFSET_ALIGNMENT_VIOLATION,
-            S_OK,
+            ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_OPERATION, ERROR_IO_PENDING,
+            ERROR_OFFSET_ALIGNMENT_VIOLATION, S_OK,
         },
         Storage::{
             FileSystem::FILE_ATTRIBUTE_HIDDEN,
@@ -38,19 +42,20 @@ use windows::{
                 PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_DELETE,
                 PRJ_NOTIFICATION_PRE_RENAME, PRJ_NOTIFY_PRE_DELETE, PRJ_NOTIFY_PRE_RENAME,
                 PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
-                PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjFileNameCompare, PrjFileNameMatch,
-                PrjFillDirEntryBuffer, PrjGetVirtualizationInstanceInfo,
+                PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjCompleteCommand, PrjFileNameCompare,
+                PrjFileNameMatch, PrjFillDirEntryBuffer, PrjGetVirtualizationInstanceInfo,
                 PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
                 PrjWriteFileData, PrjWritePlaceholderInfo,
             },
         },
     },
-    core::{GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
+    core::{Error as WindowsError, GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
 };
+use zerocopy::IntoBytes;
 
 use crate::{
     dvdbnd::{
-        filesystem::DvdbndFilesystem,
+        filesystem::{DvdbndFilesystem, encryption::EncryptionStore},
         mount::{DvdbndFile, DvdbndMount},
     },
     filesystem::readonly::{Entry, ReadOnlyFilesystem, RofsError},
@@ -76,6 +81,7 @@ struct DirEnumeration {
 }
 
 const E_BUFFER: HRESULT = ERROR_INSUFFICIENT_BUFFER.to_hresult();
+const E_PENDING: HRESULT = ERROR_IO_PENDING.to_hresult();
 
 impl<F> DvdbndMount<F>
 where
@@ -99,7 +105,13 @@ where
     fn file_basic_info<T: DvdbndFile>(&self, entry: &Entry<'_, T>) -> PRJ_FILE_BASIC_INFO {
         let (is_dir, file_size) = match entry {
             Entry::Dir(_) => (true, 0),
-            Entry::File(file) => (false, file.len()),
+            Entry::File(file) => (
+                false,
+                match file.unpadded_len() {
+                    0 => file.len(),
+                    len => len,
+                },
+            ),
             Entry::Link(_) => (false, 0),
         };
 
@@ -129,10 +141,7 @@ where
     fn mount(self) -> eyre::Result<Arc<Self>> {
         let mut mount_context = Arc::new(self);
 
-        let thread_count = match std::thread::available_parallelism() {
-            Ok(threads) => threads.get().min(16) as u32,
-            Err(_) => 0,
-        };
+        const THREAD_COUNT: u32 = 4;
 
         let mut notifications = PRJ_NOTIFICATION_MAPPING {
             NotificationBitMask: PRJ_NOTIFY_PRE_DELETE | PRJ_NOTIFY_PRE_RENAME,
@@ -141,8 +150,8 @@ where
 
         let options = PRJ_STARTVIRTUALIZING_OPTIONS {
             Flags: PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
-            PoolThreadCount: thread_count,
-            ConcurrentThreadCount: thread_count,
+            PoolThreadCount: THREAD_COUNT,
+            ConcurrentThreadCount: THREAD_COUNT,
             NotificationMappings: &mut notifications,
             NotificationMappingsCount: 1,
         };
@@ -315,94 +324,94 @@ where
 
     unsafe extern "system" fn get_file_data(
         callbackdata: &PRJ_CALLBACK_DATA,
-        mut byteoffset: u64,
-        mut length: u32,
+        _byteoffset: u64,
+        _length: u32,
     ) -> HRESULT {
-        Self::call(callbackdata, |context| {
+        let path = unsafe {
+            callbackdata
+                .FilePathName
+                .to_string()
+                .map_err(WindowsError::from)
+        };
+
+        let path = match path {
+            Err(e) => return e.code(),
+            Ok(path) => path,
+        };
+
+        let datastream_id = callbackdata.DataStreamId;
+
+        Self::call_async(callbackdata, async move |context| {
             let fs = context.mount.fs.as_rofs();
-            let path = unsafe { callbackdata.FilePathName.to_string()? };
 
             let Ok(inode) = fs.lookup([path.as_str()]) else {
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
-            let mut reader = match context.mount.make_reader(inode) {
-                Ok(reader) => reader,
-                Err(e) => {
-                    warn!("could not open file: {e}");
-                    return Err(E_FAIL.into());
-                }
+            let Ok(Entry::File(file)) = fs.entry(inode, true) else {
+                warn!("could not open file {path}");
+                return Err(E_FAIL.into());
             };
 
-            let alignment = context.instance_alignment()?.get();
+            let src_index = file.src_index();
+            let data_offset = file.data_offset();
+            let file_len = file.len() as usize;
 
-            let mut bytes = context.mount.read_mut(&mut reader, length);
+            let bdt = &context.mount.bdts[src_index];
 
-            let bytes_addr = bytes.as_ptr().addr();
-            let aligned_addr = bytes_addr.next_multiple_of(alignment as usize);
+            let alignment = context.instance_alignment()?.get() as usize;
 
-            let unaligned_len = (aligned_addr - bytes_addr).min(bytes.len());
-            let aligned_buffer_len = unaligned_len
-                .next_multiple_of(alignment as usize)
-                .min(bytes.len());
+            let buf_len = file_len + alignment - 1;
+            let mut buf = Vec::<u8>::with_capacity(buf_len);
 
-            if unaligned_len != 0 {
-                let unaligned_bytes = &bytes[..aligned_buffer_len];
-                bytes = &bytes[unaligned_len..];
+            let align_start = buf.as_ptr().align_offset(alignment);
+            let align_end = align_start + file_len;
 
-                let layout = Layout::from_size_align(aligned_buffer_len, alignment as usize)
-                    .expect("bad alignment parameters");
+            buf.resize(align_start, 0);
+            let slice = buf.slice(align_start..align_end);
 
-                let aligned_buffer = unsafe { alloc(layout) };
+            let (_, mut slice) = buf_try!(
+                @try bdt.file.read_at(slice, data_offset).await
+            );
 
-                unsafe {
-                    ptr::copy_nonoverlapping(
-                        unaligned_bytes.as_ptr(),
-                        aligned_buffer,
-                        aligned_buffer_len,
-                    );
-                }
+            if slice.len() != file_len {
+                warn!("failed to read whole file {path}");
+                return Err(E_FAIL.into());
+            }
 
-                let res = unsafe {
-                    PrjWriteFileData(
-                        callbackdata.NamespaceVirtualizationContext,
-                        &callbackdata.DataStreamId,
-                        aligned_buffer as *const c_void,
-                        byteoffset,
-                        aligned_buffer_len as u32,
-                    )
+            if let Some(index) = file.encryption_index() {
+                let context = context.clone();
+
+                let decrypt = async move {
+                    let bytes = slice.as_mut_bytes();
+                    let encryption_store = context.mount.fs.encryption_store();
+
+                    match encryption_store.decrypt(index, bytes) {
+                        Ok(()) => WindowsResult::Ok(slice),
+                        Err(e) => {
+                            warn!("could not decrypt file {path}: {e}");
+                            Err(E_FAIL.into())
+                        }
+                    }
                 };
 
-                unsafe {
-                    dealloc(aligned_buffer, layout);
-                }
-
-                byteoffset += unaligned_len as u64;
-                length -= unaligned_len as u32;
-
-                res?;
+                slice = spawn(decrypt).await.unwrap()?;
             }
 
-            let file_len = reader.len as u64;
+            let file_len = match file.unpadded_len() {
+                0 => file.len(),
+                len => len,
+            };
 
-            if file_len > byteoffset + length as u64 {
-                let max_len = (file_len - byteoffset) as u32;
-                length = length.next_multiple_of(alignment).min(max_len);
+            unsafe {
+                PrjWriteFileData(
+                    context.context,
+                    &datastream_id,
+                    slice.as_ptr() as *const c_void,
+                    0,
+                    file_len,
+                )
             }
-
-            if length != 0 && !bytes.is_empty() {
-                unsafe {
-                    PrjWriteFileData(
-                        callbackdata.NamespaceVirtualizationContext,
-                        &callbackdata.DataStreamId,
-                        bytes.as_ptr() as *const c_void,
-                        byteoffset,
-                        length,
-                    )?
-                };
-            }
-
-            Ok(())
         })
     }
 
@@ -421,10 +430,11 @@ where
         }
     }
 
-    #[track_caller]
+    unsafe extern "system" fn cancel_command(_callbackdata: &PRJ_CALLBACK_DATA) {}
+
     fn call(
         callbackdata: &PRJ_CALLBACK_DATA,
-        f: impl FnOnce(&Self) -> WindowsResult<()>,
+        f: impl FnOnce(&Arc<Self>) -> WindowsResult<()>,
     ) -> HRESULT {
         let Some(context) =
             (unsafe { Weak::from_raw(callbackdata.InstanceContext as *const Self).upgrade() })
@@ -437,8 +447,11 @@ where
             Ok(res) => match res {
                 Ok(_) => S_OK,
                 Err(e) => {
-                    warn!("callback returned an error: {e}\n\tat {name}");
-                    e.code()
+                    let code = e.code();
+                    if code != E_PENDING {
+                        warn!("callback returned an error: {e}\n\tat {name}");
+                    }
+                    code
                 }
             },
             Err(payload) => {
@@ -452,6 +465,54 @@ where
         mem::forget(Arc::downgrade(&context));
 
         res
+    }
+
+    fn call_async<Fut>(
+        callbackdata: &PRJ_CALLBACK_DATA,
+        f: impl (FnOnce(Arc<Self>) -> Fut) + Send + 'static,
+    ) -> HRESULT
+    where
+        Fut: Future<Output = WindowsResult<()>> + 'static,
+    {
+        let name = type_name_of_val(&f);
+        let command_id = callbackdata.CommandId;
+
+        let dispatch = |context: &Arc<Self>| {
+            let complete = {
+                let context = context.clone();
+                async move || {
+                    let res = AssertUnwindSafe(f(context.clone())).catch_unwind().await;
+
+                    let res = match res {
+                        Ok(res) => match res {
+                            Ok(_) => S_OK,
+                            Err(e) => {
+                                warn!("async callback returned an error: {e}\n\tat {name}");
+                                e.code()
+                            }
+                        },
+                        Err(payload) => {
+                            if let Some(&payload) = payload.downcast_ref::<&'static str>() {
+                                warn!("async callback panicked: {payload}\n\tat {name}");
+                            }
+                            E_FAIL
+                        }
+                    };
+
+                    if let Err(e) =
+                        unsafe { PrjCompleteCommand(context.context, command_id, res, None) }
+                    {
+                        warn!("PrjCompleteCommand returned an error: {e}\n\tat {name}");
+                    }
+                }
+            };
+
+            let _ = context.mount.dispatcher.dispatch(complete);
+
+            Err(E_PENDING.into())
+        };
+
+        Self::call(callbackdata, dispatch)
     }
 
     const CALLBACKS: PRJ_CALLBACKS = unsafe {
@@ -510,9 +571,12 @@ where
                 ) -> HRESULT,
             >(Self::notify)),
 
-            QueryFileNameCallback: None,
+            CancelCommandCallback: Some(mem::transmute::<
+                unsafe extern "system" fn(&PRJ_CALLBACK_DATA),
+                unsafe extern "system" fn(*const PRJ_CALLBACK_DATA),
+            >(Self::cancel_command)),
 
-            CancelCommandCallback: None,
+            QueryFileNameCallback: None,
         }
     };
 }

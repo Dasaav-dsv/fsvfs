@@ -1,4 +1,3 @@
-#![allow(unused)]
 use clap::Parser;
 use color_eyre::eyre;
 use tracing::debug;

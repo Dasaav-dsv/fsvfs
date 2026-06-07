@@ -1,36 +1,21 @@
-use core::slice;
-use std::{
-    ffi::OsStr,
-    fs,
-    io::{Seek, SeekFrom},
-    path::Path,
-    ptr::NonNull,
-    sync::atomic::{AtomicU8, AtomicU32, Ordering},
-    time::SystemTime,
-};
+use std::{ffi::OsStr, fs, path::Path};
 
-use color_eyre::eyre::{self, Context};
-use memmap2::{MmapOptions, MmapRaw};
-use parking_lot::Mutex;
+use color_eyre::eyre;
+use compio::{dispatcher::Dispatcher, fs::File, runtime::Runtime};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use rayon::{
     ThreadPoolBuilder,
     iter::{IntoParallelRefIterator, ParallelIterator},
 };
-use sharded_slab::Slab;
-use thiserror::Error;
 use tracing::info;
 
 use crate::{
     dvdbnd::{
         bhd5::FileAny,
         dict::Dictionary,
-        filesystem::{
-            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder,
-            encryption::{DecryptError, EncryptionStore},
-        },
+        filesystem::{DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder},
         keys::Keys,
     },
-    filesystem::readonly::{Entry, ReadOnlyFilesystem, RofsError},
     time::time,
 };
 
@@ -39,44 +24,18 @@ mod fuser;
 #[cfg(windows)]
 mod projfs;
 
-#[derive(Debug, Error)]
-pub enum MakeReaderError {
-    #[error(transparent)]
-    Rofs(#[from] RofsError),
-
-    #[error(transparent)]
-    Decrypt(#[from] DecryptError),
-
-    #[error("too many readers")]
-    TooManyReaders,
-}
-
 #[derive(Debug)]
 pub struct DvdbndMount<F: DvdbndFilesystem> {
-    bdts: Box<[Bdt]>,
-    locks: Box<[FileLock]>,
-    readers: Slab<FileReader>,
-    timestamp: SystemTime,
     fs: F,
+    bdts: Box<[Bdt]>,
+    dispatcher: Dispatcher,
+    #[cfg(unix)]
+    timestamp: SystemTime,
 }
 
 #[derive(Debug)]
 struct Bdt {
-    mmap: MmapRaw,
-    size: usize,
-}
-
-#[derive(Debug)]
-struct FileLock {
-    mutex: Mutex<()>,
-    state: AtomicU8,
-}
-
-#[derive(Debug)]
-struct FileReader {
-    ptr: NonNull<u8>,
-    pos: AtomicU32,
-    len: u32,
+    file: File,
 }
 
 impl DvdbndMount<DvdbndRofs> {
@@ -128,212 +87,39 @@ impl DvdbndMount<DvdbndRofs> {
 
         let bdts = keys.by_path.keys().map(|path| path.to_bdt());
 
-        Self::from_fs_and_bdts(fs, bdts)
+        let mount = Runtime::new()?.block_on(Self::from_fs_and_bdts(fs, bdts))?;
+
+        Ok(mount)
     }
 }
 
 impl<F: DvdbndFilesystem> DvdbndMount<F> {
-    pub fn count_files(&self) -> usize {
-        self.locks.len()
-    }
-
-    fn from_fs_and_bdts<P>(fs: F, paths: P) -> eyre::Result<Self>
+    async fn from_fs_and_bdts<P>(fs: F, paths: P) -> eyre::Result<Self>
     where
         P: IntoIterator<Item: AsRef<Path>>,
     {
-        let bdts = paths
-            .into_iter()
-            .map(Bdt::open)
-            .collect::<eyre::Result<Vec<_>>>()?;
+        let bdts = stream::iter(paths)
+            .then(Bdt::open)
+            .try_collect::<Vec<_>>()
+            .await?;
 
-        let locks = fs
-            .as_rofs()
-            .file_iter()
-            .map(|file| match file.encryption_index() {
-                Some(_) => FileLock::new(FileLock::IS_ENCRYPTED),
-                None => FileLock::new(0),
-            })
-            .collect::<Vec<_>>();
-
-        let timestamp = SystemTime::now();
+        let dispatcher = Dispatcher::builder()
+            .worker_threads(4.try_into().unwrap())
+            .build()?;
 
         Ok(Self {
-            bdts: bdts.into_boxed_slice(),
-            locks: locks.into_boxed_slice(),
-            readers: Slab::new(),
-            timestamp,
             fs,
+            bdts: bdts.into_boxed_slice(),
+            dispatcher,
+            #[cfg(unix)]
+            timestamp: std::time::SystemTime::now(),
         })
-    }
-
-    fn make_reader(&self, inode: u64) -> Result<FileReader, MakeReaderError> {
-        let fs = self.fs.as_rofs();
-
-        let entry = fs.entry(inode, true)?;
-        let index = fs.file_index(&entry)?;
-
-        let Entry::File(file) = entry else {
-            return Err(RofsError::IsDir.into());
-        };
-
-        let mmap = &self.bdts[file.src_index()].mmap;
-
-        let data_offset = usize::try_from(file.data_offset()).unwrap();
-        let ptr = unsafe { mmap.as_mut_ptr().add(data_offset) };
-
-        if let Some(encryption_index) = file.encryption_index()
-            && let lock = &self.locks[index]
-            && lock.has_encrypted_flag()
-        {
-            let _guard = lock.mutex.lock();
-
-            if lock.has_encrypted_flag() {
-                let file_len = file.len() as usize;
-
-                self.fs
-                    .encryption_store()
-                    .decrypt(encryption_index, unsafe {
-                        slice::from_raw_parts_mut(ptr, file_len)
-                    })?;
-
-                lock.clear_encrypted_flag();
-            }
-        }
-
-        let file_len = match file.unpadded_len() {
-            0 => file.len(),
-            len => len,
-        };
-
-        Ok(FileReader {
-            ptr: NonNull::new(ptr).unwrap(),
-            pos: AtomicU32::new(0),
-            len: file_len,
-        })
-    }
-
-    fn open(&self, inode: u64) -> Result<usize, MakeReaderError> {
-        let reader = self.make_reader(inode)?;
-        self.readers
-            .insert(reader)
-            .ok_or(MakeReaderError::TooManyReaders)
-    }
-
-    fn read<'a>(&'a self, reader: &FileReader, len: u32) -> &'a [u8] {
-        unsafe { reader.read(len).as_ref() }
-    }
-
-    fn read_mut<'a>(&'a self, reader: &mut FileReader, len: u32) -> &'a [u8] {
-        unsafe { reader.read_mut(len).as_ref() }
-    }
-
-    fn seek(&self, reader: &FileReader, pos: SeekFrom) -> u64 {
-        reader.seek(pos)
-    }
-
-    fn seek_mut(&self, reader: &mut FileReader, pos: SeekFrom) -> u64 {
-        reader.seek_mut(pos)
     }
 }
 
 impl Bdt {
-    fn open<P: AsRef<Path>>(path: P) -> eyre::Result<Self> {
-        let mut file = fs::File::open(&path)?;
-
-        let actual_size = file.seek(SeekFrom::End(0))?;
-        let size = usize::try_from(actual_size).wrap_err("file is too large")?;
-
-        file.seek(SeekFrom::Start(0))?;
-
-        let mmap = unsafe { MmapRaw::from(MmapOptions::new().map_copy(&file)?) };
-
-        Ok(Self { mmap, size })
+    async fn open<P: AsRef<Path>>(path: P) -> eyre::Result<Self> {
+        let file = File::open(&path).await?;
+        Ok(Self { file })
     }
 }
-
-impl FileLock {
-    const IS_ENCRYPTED: u8 = 1;
-
-    const fn new(state: u8) -> Self {
-        Self {
-            mutex: Mutex::new(()),
-            state: AtomicU8::new(state),
-        }
-    }
-
-    fn has_encrypted_flag(&self) -> bool {
-        self.state.load(Ordering::Acquire) & Self::IS_ENCRYPTED != 0
-    }
-
-    fn clear_encrypted_flag(&self) {
-        self.state.fetch_and(!Self::IS_ENCRYPTED, Ordering::Release);
-    }
-}
-
-impl FileReader {
-    fn read(&self, len: u32) -> NonNull<[u8]> {
-        let mut read = 0;
-        let self_pos = self.pos.update(Ordering::AcqRel, Ordering::Acquire, |pos| {
-            let avail = self.len.saturating_sub(pos);
-            read = len.min(avail);
-            pos + read
-        });
-
-        let ptr = unsafe { self.ptr.add(self_pos as usize) };
-
-        NonNull::slice_from_raw_parts(ptr, read as usize)
-    }
-
-    fn read_mut(&mut self, len: u32) -> NonNull<[u8]> {
-        let self_pos = self.pos.get_mut();
-        let pos = *self_pos;
-
-        let avail = self.len.saturating_sub(pos);
-        let read = len.min(avail);
-
-        *self_pos += read;
-
-        let ptr = unsafe { self.ptr.add(pos as usize) };
-
-        NonNull::slice_from_raw_parts(ptr, read as usize)
-    }
-
-    fn seek(&self, pos: SeekFrom) -> u64 {
-        let mut new_pos = 0;
-        self.pos
-            .update(Ordering::AcqRel, Ordering::Acquire, |self_pos| {
-                new_pos = match pos {
-                    SeekFrom::Start(offset) => offset,
-                    SeekFrom::End(offset) => (self.len as u64).wrapping_add_signed(offset),
-                    SeekFrom::Current(offset) => (self_pos as u64).wrapping_add_signed(offset),
-                };
-                new_pos as u32
-            });
-
-        new_pos
-    }
-
-    fn seek_mut(&mut self, pos: SeekFrom) -> u64 {
-        let self_pos = self.pos.get_mut();
-
-        let new_pos = match pos {
-            SeekFrom::Start(offset) => offset,
-            SeekFrom::End(offset) => (self.len as u64).wrapping_add_signed(offset),
-            SeekFrom::Current(offset) => (*self_pos as u64).wrapping_add_signed(offset),
-        };
-
-        *self_pos = new_pos as u32;
-
-        new_pos
-    }
-}
-
-impl Default for FileLock {
-    fn default() -> Self {
-        Self::new(0)
-    }
-}
-
-unsafe impl Send for FileReader {}
-
-unsafe impl Sync for FileReader {}
