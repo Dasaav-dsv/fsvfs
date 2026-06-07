@@ -2,7 +2,7 @@ use std::{
     any::type_name_of_val,
     ffi::c_void,
     fs,
-    io::{self, Write},
+    io::Write,
     mem::{self, ManuallyDrop},
     num::NonZero,
     ops::Range,
@@ -32,17 +32,16 @@ use windows::{
             ProjectedFileSystem::{
                 PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN,
                 PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_FILE_BASIC_INFO, PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
-                PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION_MAPPING,
-                PRJ_NOTIFY_PRE_DELETE, PRJ_NOTIFY_PRE_RENAME, PRJ_PLACEHOLDER_INFO,
-                PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_VIRTUALIZATION_INSTANCE_INFO,
-                PrjCompleteCommand, PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
-                PrjGetVirtualizationInstanceInfo, PrjMarkDirectoryAsPlaceholder,
-                PrjStartVirtualizing, PrjStopVirtualizing, PrjWriteFileData,
-                PrjWritePlaceholderInfo,
+                PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION_MAPPING, PRJ_NOTIFY_NONE,
+                PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
+                PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjCompleteCommand, PrjFileNameCompare,
+                PrjFileNameMatch, PrjFillDirEntryBuffer, PrjGetVirtualizationInstanceInfo,
+                PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
+                PrjWriteFileData, PrjWritePlaceholderInfo,
             },
         },
     },
-    core::{GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
+    core::{Error as WindowsError, GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
 };
 
 use crate::{
@@ -136,7 +135,7 @@ where
         const THREAD_COUNT: u32 = 4;
 
         let mut notifications = PRJ_NOTIFICATION_MAPPING {
-            NotificationBitMask: PRJ_NOTIFY_PRE_DELETE | PRJ_NOTIFY_PRE_RENAME,
+            NotificationBitMask: PRJ_NOTIFY_NONE,
             NotificationRoot: w!(""),
         };
 
@@ -336,7 +335,7 @@ where
                     .read_file(inode, alignment.try_into().ok())
                     .await;
 
-                let slice = res.map_err(io::Error::other)?;
+                let slice = res.map_err(|e| WindowsError::new(E_FAIL, e.to_string()))?;
 
                 unsafe {
                     PrjWriteFileData(
@@ -354,6 +353,7 @@ where
 
     unsafe extern "system" fn cancel_command(_callbackdata: &PRJ_CALLBACK_DATA) {}
 
+    #[inline(always)]
     fn call(
         callbackdata: &PRJ_CALLBACK_DATA,
         f: impl FnOnce(&Arc<Self>) -> WindowsResult<()>,
@@ -386,6 +386,7 @@ where
         }
     }
 
+    #[inline(always)]
     fn call_async<Fut>(
         callbackdata: &PRJ_CALLBACK_DATA,
         f: impl (FnOnce(Arc<Self>) -> Fut) + Send + 'static,

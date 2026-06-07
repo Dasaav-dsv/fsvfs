@@ -1,9 +1,12 @@
-use std::{ffi::OsStr, fs, num::NonZero, path::Path};
+use std::{
+    ffi::OsStr, fs, mem::ManuallyDrop, num::NonZero, os::windows::io::FromRawHandle, path::Path,
+};
 
 use color_eyre::eyre;
 use compio::{
     buf::{IoBuf, Slice, buf_try},
     dispatcher::Dispatcher,
+    driver::{AsRawFd, RawFd},
     fs::File,
     io::AsyncReadAtExt,
     runtime::Runtime,
@@ -45,7 +48,7 @@ pub struct DvdbndMount<F: DvdbndFilesystem> {
 
 #[derive(Debug)]
 struct Bdt {
-    file: File,
+    file: RawFd,
 }
 
 impl DvdbndMount<DvdbndRofs> {
@@ -160,8 +163,9 @@ where
         buf.resize(align_start, 0);
         let slice = buf.slice(align_start..align_end);
 
+        let bdt_file = unsafe { bdt.file() };
         let (_, mut slice) = buf_try!(
-            @try bdt.file.read_exact_at(slice, data_offset).await
+            @try bdt_file.read_exact_at(slice, data_offset).await
         );
 
         if slice.len() != file_len {
@@ -184,7 +188,22 @@ where
 
 impl Bdt {
     async fn open<P: AsRef<Path>>(path: P) -> eyre::Result<Self> {
-        let file = File::open(&path).await?;
+        let file = ManuallyDrop::new(File::open(&path).await?).as_raw_fd();
         Ok(Self { file })
     }
+
+    unsafe fn file(&self) -> ManuallyDrop<File> {
+        cfg_select! {
+            unix => unsafe {
+                ManuallyDrop::new(File::from_raw_fd(self.file))
+            }
+            windows => unsafe {
+                ManuallyDrop::new(File::from_raw_handle(self.file))
+            },
+        }
+    }
 }
+
+unsafe impl Send for Bdt {}
+
+unsafe impl Sync for Bdt {}
