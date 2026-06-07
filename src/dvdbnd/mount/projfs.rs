@@ -3,7 +3,7 @@ use std::{
     ffi::c_void,
     fs,
     io::{self, Write},
-    mem,
+    mem::{self, ManuallyDrop},
     num::NonZero,
     ops::Range,
     os::windows::fs::OpenOptionsExt,
@@ -358,9 +358,9 @@ where
         callbackdata: &PRJ_CALLBACK_DATA,
         f: impl FnOnce(&Arc<Self>) -> WindowsResult<()>,
     ) -> HRESULT {
-        let Some(context) =
-            (unsafe { Weak::from_raw(callbackdata.InstanceContext as *const Self).upgrade() })
-        else {
+        let Some(context) = (unsafe {
+            ManuallyDrop::new(Weak::from_raw(callbackdata.InstanceContext as *const Self)).upgrade()
+        }) else {
             return E_ABORT;
         };
 
@@ -383,8 +383,6 @@ where
                 E_FAIL
             }
         };
-
-        mem::forget(Arc::downgrade(&context));
 
         res
     }
