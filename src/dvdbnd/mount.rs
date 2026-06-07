@@ -1,6 +1,4 @@
-use std::{
-    ffi::OsStr, fs, mem::ManuallyDrop, num::NonZero, os::windows::io::FromRawHandle, path::Path,
-};
+use std::{ffi::OsStr, fs, mem::ManuallyDrop, num::NonZero, path::Path};
 
 use color_eyre::eyre;
 use compio::{
@@ -43,7 +41,7 @@ pub struct DvdbndMount<F: DvdbndFilesystem> {
     bdts: Box<[Bdt]>,
     dispatcher: Dispatcher,
     #[cfg(unix)]
-    timestamp: SystemTime,
+    timestamp: std::time::SystemTime,
 }
 
 #[derive(Debug)]
@@ -195,9 +193,11 @@ impl Bdt {
     unsafe fn file(&self) -> ManuallyDrop<File> {
         cfg_select! {
             unix => unsafe {
+                use compio::driver::FromRawFd;
                 ManuallyDrop::new(File::from_raw_fd(self.file))
             }
             windows => unsafe {
+                use compio::driver::FromRawHandle;
                 ManuallyDrop::new(File::from_raw_handle(self.file))
             },
         }
