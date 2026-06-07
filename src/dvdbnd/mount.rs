@@ -171,8 +171,12 @@ where
         }
 
         if let Some(index) = file.encryption_index() {
-            let encryption_store = self.fs.encryption_store();
-            encryption_store.decrypt(index, slice.as_inner_mut())?;
+            slice = async move {
+                let encryption_store = self.fs.encryption_store();
+                encryption_store.decrypt(index, slice.as_inner_mut())?;
+                eyre::Ok(slice)
+            }
+            .await?;
         }
 
         slice.set_end(match file.unpadded_len() {
