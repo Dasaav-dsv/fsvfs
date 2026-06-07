@@ -1,6 +1,8 @@
 fn main() {
     #[cfg(windows)]
     delayload_projectedfslib();
+
+    println!("cargo::rerun-if-changed=build.rs");
 }
 
 #[cfg(windows)]

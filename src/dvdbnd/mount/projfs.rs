@@ -632,7 +632,10 @@ fn init_mountpoint(mountpoint: &str) -> eyre::Result<HSTRING> {
 }
 
 fn get_or_create_mount_guid(mountpoint: &str) -> eyre::Result<GUID> {
-    let path = format!("{mountpoint}.guid");
+    let path = match mountpoint.rsplit_once(['\\', '/']) {
+        Some((parent, name)) => format!("{parent}/~{name}.GUID"),
+        None => format!("~{mountpoint}.GUID"),
+    };
 
     if let Ok(bytes) = fs::read(&path)
         && let Some(bytes) = bytes.as_array()
