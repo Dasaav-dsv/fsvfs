@@ -1,7 +1,13 @@
-use std::{ffi::OsStr, fs, path::Path};
+use std::{ffi::OsStr, fs, num::NonZero, path::Path};
 
 use color_eyre::eyre;
-use compio::{dispatcher::Dispatcher, fs::File, runtime::Runtime};
+use compio::{
+    buf::{IoBuf, Slice, buf_try},
+    dispatcher::Dispatcher,
+    fs::File,
+    io::AsyncReadAtExt,
+    runtime::Runtime,
+};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use rayon::{
     ThreadPoolBuilder,
@@ -13,9 +19,13 @@ use crate::{
     dvdbnd::{
         bhd5::FileAny,
         dict::Dictionary,
-        filesystem::{DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder},
+        filesystem::{
+            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder,
+            encryption::EncryptionStore,
+        },
         keys::Keys,
     },
+    filesystem::readonly::{Entry, ReadOnlyFilesystem, RofsError},
     time::time,
 };
 
@@ -93,7 +103,10 @@ impl DvdbndMount<DvdbndRofs> {
     }
 }
 
-impl<F: DvdbndFilesystem> DvdbndMount<F> {
+impl<F: DvdbndFilesystem> DvdbndMount<F>
+where
+    F: Send + Sync + 'static,
+{
     async fn from_fs_and_bdts<P>(fs: F, paths: P) -> eyre::Result<Self>
     where
         P: IntoIterator<Item: AsRef<Path>>,
@@ -103,9 +116,7 @@ impl<F: DvdbndFilesystem> DvdbndMount<F> {
             .try_collect::<Vec<_>>()
             .await?;
 
-        let dispatcher = Dispatcher::builder()
-            .worker_threads(4.try_into().unwrap())
-            .build()?;
+        let dispatcher = Dispatcher::new()?;
 
         Ok(Self {
             fs,
@@ -114,6 +125,60 @@ impl<F: DvdbndFilesystem> DvdbndMount<F> {
             #[cfg(unix)]
             timestamp: std::time::SystemTime::now(),
         })
+    }
+
+    async fn read_file(
+        &self,
+        inode: u64,
+        alignment: Option<NonZero<usize>>,
+    ) -> eyre::Result<Slice<Vec<u8>>> {
+        let fs = self.fs.as_rofs();
+
+        let file = match fs.entry(inode, true) {
+            Ok(Entry::File(file)) => file,
+            Ok(_) => return Err(RofsError::IsDir.into()),
+            Err(e) => return Err(e.into()),
+        };
+
+        let src_index = file.src_index();
+        let data_offset = file.data_offset();
+        let file_len = file.len() as usize;
+
+        let bdt = &self.bdts[src_index];
+
+        let alignment = match alignment {
+            Some(alignment) => alignment.get(),
+            None => 512,
+        };
+
+        let buf_len = file_len + alignment - 1;
+        let mut buf = Vec::<u8>::with_capacity(buf_len);
+
+        let align_start = buf.as_ptr().align_offset(alignment);
+        let align_end = align_start + file_len;
+
+        buf.resize(align_start, 0);
+        let slice = buf.slice(align_start..align_end);
+
+        let (_, mut slice) = buf_try!(
+            @try bdt.file.read_exact_at(slice, data_offset).await
+        );
+
+        if slice.len() != file_len {
+            return Err(eyre::eyre!("failed to read whole file"));
+        }
+
+        if let Some(index) = file.encryption_index() {
+            let encryption_store = self.fs.encryption_store();
+            encryption_store.decrypt(index, slice.as_inner_mut())?;
+        }
+
+        slice.set_end(match file.unpadded_len() {
+            0 => file_len as usize,
+            len => len as usize,
+        });
+
+        Ok(slice)
     }
 }
 

@@ -2,7 +2,7 @@ use std::{
     any::type_name_of_val,
     ffi::c_void,
     fs,
-    io::Write,
+    io::{self, Write},
     mem,
     num::NonZero,
     ops::Range,
@@ -16,11 +16,6 @@ use std::{
 };
 
 use color_eyre::eyre::{self, eyre};
-use compio::{
-    buf::{IoBuf, buf_try},
-    io::AsyncReadAt,
-    runtime::spawn,
-};
 use futures_util::FutureExt;
 use fxhash::FxBuildHasher;
 use papaya::HashMap as PapayaMap;
@@ -30,32 +25,29 @@ use windows::{
     Win32::{
         Foundation::{
             E_ABORT, E_FAIL, E_INVALIDARG, ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND,
-            ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_OPERATION, ERROR_IO_PENDING,
-            ERROR_OFFSET_ALIGNMENT_VIOLATION, S_OK,
+            ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_OFFSET_ALIGNMENT_VIOLATION, S_OK,
         },
         Storage::{
             FileSystem::FILE_ATTRIBUTE_HIDDEN,
             ProjectedFileSystem::{
                 PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN,
                 PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_FILE_BASIC_INFO, PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
-                PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION, PRJ_NOTIFICATION_MAPPING,
-                PRJ_NOTIFICATION_PARAMETERS, PRJ_NOTIFICATION_PRE_DELETE,
-                PRJ_NOTIFICATION_PRE_RENAME, PRJ_NOTIFY_PRE_DELETE, PRJ_NOTIFY_PRE_RENAME,
-                PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
-                PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjCompleteCommand, PrjFileNameCompare,
-                PrjFileNameMatch, PrjFillDirEntryBuffer, PrjGetVirtualizationInstanceInfo,
-                PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
-                PrjWriteFileData, PrjWritePlaceholderInfo,
+                PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION_MAPPING,
+                PRJ_NOTIFY_PRE_DELETE, PRJ_NOTIFY_PRE_RENAME, PRJ_PLACEHOLDER_INFO,
+                PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_VIRTUALIZATION_INSTANCE_INFO,
+                PrjCompleteCommand, PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
+                PrjGetVirtualizationInstanceInfo, PrjMarkDirectoryAsPlaceholder,
+                PrjStartVirtualizing, PrjStopVirtualizing, PrjWriteFileData,
+                PrjWritePlaceholderInfo,
             },
         },
     },
-    core::{Error as WindowsError, GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
+    core::{GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
 };
-use zerocopy::IntoBytes;
 
 use crate::{
     dvdbnd::{
-        filesystem::{DvdbndFilesystem, encryption::EncryptionStore},
+        filesystem::DvdbndFilesystem,
         mount::{DvdbndFile, DvdbndMount},
     },
     filesystem::readonly::{Entry, ReadOnlyFilesystem, RofsError},
@@ -327,107 +319,37 @@ where
         _byteoffset: u64,
         _length: u32,
     ) -> HRESULT {
-        let path = unsafe {
-            callbackdata
-                .FilePathName
-                .to_string()
-                .map_err(WindowsError::from)
-        };
+        Self::call(callbackdata, |context| {
+            let path = unsafe { callbackdata.FilePathName.to_string()? };
 
-        let path = match path {
-            Err(e) => return e.code(),
-            Ok(path) => path,
-        };
-
-        let datastream_id = callbackdata.DataStreamId;
-
-        Self::call_async(callbackdata, async move |context| {
-            let fs = context.mount.fs.as_rofs();
-
-            let Ok(inode) = fs.lookup([path.as_str()]) else {
+            let Ok(inode) = context.mount.fs.as_rofs().lookup([path.as_str()]) else {
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
-            let Ok(Entry::File(file)) = fs.entry(inode, true) else {
-                warn!("could not open file {path}");
-                return Err(E_FAIL.into());
-            };
+            let datastream_id = callbackdata.DataStreamId;
 
-            let src_index = file.src_index();
-            let data_offset = file.data_offset();
-            let file_len = file.len() as usize;
+            Self::call_async(callbackdata, async move |context| {
+                let alignment = context.instance_alignment()?;
 
-            let bdt = &context.mount.bdts[src_index];
+                let res = context
+                    .mount
+                    .read_file(inode, alignment.try_into().ok())
+                    .await;
 
-            let alignment = context.instance_alignment()?.get() as usize;
+                let slice = res.map_err(io::Error::other)?;
 
-            let buf_len = file_len + alignment - 1;
-            let mut buf = Vec::<u8>::with_capacity(buf_len);
-
-            let align_start = buf.as_ptr().align_offset(alignment);
-            let align_end = align_start + file_len;
-
-            buf.resize(align_start, 0);
-            let slice = buf.slice(align_start..align_end);
-
-            let (_, mut slice) = buf_try!(
-                @try bdt.file.read_at(slice, data_offset).await
-            );
-
-            if slice.len() != file_len {
-                warn!("failed to read whole file {path}");
-                return Err(E_FAIL.into());
-            }
-
-            if let Some(index) = file.encryption_index() {
-                let context = context.clone();
-
-                let decrypt = async move {
-                    let bytes = slice.as_mut_bytes();
-                    let encryption_store = context.mount.fs.encryption_store();
-
-                    match encryption_store.decrypt(index, bytes) {
-                        Ok(()) => WindowsResult::Ok(slice),
-                        Err(e) => {
-                            warn!("could not decrypt file {path}: {e}");
-                            Err(E_FAIL.into())
-                        }
-                    }
-                };
-
-                slice = spawn(decrypt).await.unwrap()?;
-            }
-
-            let file_len = match file.unpadded_len() {
-                0 => file.len(),
-                len => len,
-            };
-
-            unsafe {
-                PrjWriteFileData(
-                    context.context,
-                    &datastream_id,
-                    slice.as_ptr() as *const c_void,
-                    0,
-                    file_len,
-                )
-            }
+                unsafe {
+                    PrjWriteFileData(
+                        context.context,
+                        &datastream_id,
+                        slice.as_ptr() as *const c_void,
+                        0,
+                        slice.len() as u32,
+                    )
+                }
+            })
+            .ok()
         })
-    }
-
-    unsafe extern "system" fn notify(
-        _callbackdata: &PRJ_CALLBACK_DATA,
-        _isdirectory: bool,
-        notification: PRJ_NOTIFICATION,
-        _destinationfilename: PCWSTR,
-        _operationparameters: &mut PRJ_NOTIFICATION_PARAMETERS,
-    ) -> HRESULT {
-        match notification {
-            PRJ_NOTIFICATION_PRE_DELETE | PRJ_NOTIFICATION_PRE_RENAME => {
-                ERROR_INVALID_OPERATION.to_hresult()
-            }
-            _ => S_OK,
-        }
     }
 
     unsafe extern "system" fn cancel_command(_callbackdata: &PRJ_CALLBACK_DATA) {}
@@ -554,27 +476,12 @@ where
                 unsafe extern "system" fn(*const PRJ_CALLBACK_DATA, u64, u32) -> HRESULT,
             >(Self::get_file_data)),
 
-            NotificationCallback: Some(mem::transmute::<
-                unsafe extern "system" fn(
-                    &PRJ_CALLBACK_DATA,
-                    bool,
-                    PRJ_NOTIFICATION,
-                    PCWSTR,
-                    &mut PRJ_NOTIFICATION_PARAMETERS,
-                ) -> HRESULT,
-                unsafe extern "system" fn(
-                    *const PRJ_CALLBACK_DATA,
-                    bool,
-                    PRJ_NOTIFICATION,
-                    PCWSTR,
-                    *mut PRJ_NOTIFICATION_PARAMETERS,
-                ) -> HRESULT,
-            >(Self::notify)),
-
             CancelCommandCallback: Some(mem::transmute::<
                 unsafe extern "system" fn(&PRJ_CALLBACK_DATA),
                 unsafe extern "system" fn(*const PRJ_CALLBACK_DATA),
             >(Self::cancel_command)),
+
+            NotificationCallback: None,
 
             QueryFileNameCallback: None,
         }
