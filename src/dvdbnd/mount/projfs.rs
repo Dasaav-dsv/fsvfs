@@ -365,7 +365,8 @@ where
         };
 
         let name = type_name_of_val(&f);
-        let res = match panic::catch_unwind(AssertUnwindSafe(|| f(&context))) {
+
+        match panic::catch_unwind(AssertUnwindSafe(|| f(&context))) {
             Ok(res) => match res {
                 Ok(_) => S_OK,
                 Err(e) => {
@@ -382,9 +383,7 @@ where
                 }
                 E_FAIL
             }
-        };
-
-        res
+        }
     }
 
     fn call_async<Fut>(
