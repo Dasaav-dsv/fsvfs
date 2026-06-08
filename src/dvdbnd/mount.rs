@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, fs, io, mem::ManuallyDrop, num::NonZero, path::Path};
+use std::{ffi::OsStr, fs, mem::ManuallyDrop, num::NonZero, path::Path};
 
 use color_eyre::eyre;
 use compio::{
@@ -6,7 +6,6 @@ use compio::{
     dispatcher::Dispatcher,
     driver::{AsRawFd, RawFd},
     fs::File,
-    io::AsyncReadAtExt,
     runtime::Runtime,
 };
 use futures_util::{StreamExt, TryStreamExt, stream};
@@ -21,7 +20,7 @@ use crate::{
         bhd5::FileAny,
         dict::Dictionary,
         filesystem::{
-            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder,
+            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, buffer::AlignedBuffer,
             encryption::EncryptionStore,
         },
         keys::Keys,
@@ -133,7 +132,7 @@ where
         &self,
         inode: u64,
         alignment: Option<NonZero<usize>>,
-    ) -> eyre::Result<Slice<Vec<u8>>> {
+    ) -> eyre::Result<Slice<AlignedBuffer>> {
         let fs = self.fs.as_rofs();
 
         let file = match fs.entry(inode, true) {
@@ -188,42 +187,27 @@ impl BdtReader {
         file: &F,
         alignment: NonZero<usize>,
         encryption_store: &impl EncryptionStore,
-    ) -> eyre::Result<Slice<Vec<u8>>> {
-        let alignment = alignment.get();
+    ) -> eyre::Result<Slice<AlignedBuffer>> {
         let src_index = file.src_index();
         let data_offset = file.data_offset();
         let file_len = file.len() as usize;
 
-        let buf_len = file_len + alignment - 1;
-        let mut buf = Vec::<u8>::with_capacity(buf_len);
-
-        let align_start = buf.as_ptr().align_offset(alignment);
-        let align_end = align_start + file_len;
-
-        buf.resize(align_start, 0);
-        let mut slice = buf.slice(align_start..align_end);
+        let mut buf = AlignedBuffer::new(file_len, alignment);
 
         let bdt = self.bdts[src_index];
-        slice = self
+        let res = self
             .dispatcher
             .dispatch(async move || {
                 // SAFETY: this is the thread this file is attached to.
                 let bdt_file = unsafe { bdt.as_file() };
-                let (_, slice) = buf_try!(
-                    @try bdt_file.read_exact_at(slice, data_offset).await
-                );
-                io::Result::Ok(slice)
+                buf.fill(&*bdt_file, data_offset, 0).await
             })?
-            .await??;
+            .await?;
 
-        if slice.len() != file_len {
-            return Err(eyre::eyre!("failed to read whole file"));
-        }
+        (_, buf) = buf_try!(@try res);
 
         if let Some(index) = file.encryption_index() {
-            encryption_store
-                .decrypt(index, slice.as_inner_mut())?
-                .await?;
+            encryption_store.decrypt(index, &mut buf)?.await?;
         }
 
         let actual_file_len = match file.unpadded_len() {
@@ -231,9 +215,7 @@ impl BdtReader {
             len => len as usize,
         };
 
-        slice.set_end(align_start + actual_file_len);
-
-        Ok(slice)
+        Ok(buf.slice(..actual_file_len))
     }
 }
 

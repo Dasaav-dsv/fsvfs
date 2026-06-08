@@ -1,6 +1,6 @@
 use aes::cipher::{
     BlockCipherDecrypt, KeyInit,
-    array::{AsArrayMut, AsArrayRef, AssocArraySize},
+    array::{AsArrayMut, AsArrayRef},
 };
 use futures_util::TryFutureExt;
 use thiserror::Error;
@@ -13,6 +13,8 @@ use crate::{
     },
     unaligned::{U16, U24, U32},
 };
+
+pub const BLOCK_SIZE: usize = 16;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -30,24 +32,31 @@ pub enum StoreError {
 pub enum DecryptError {
     #[error("the specified index ({0}) is invalid (this indicates a bug in fsvfs)")]
     Index(usize),
-
-    #[error("block (at file offset {0}) is out of bounds")]
-    Block(u32),
 }
 
 pub trait EncryptionStore {
-    fn decrypt(
+    fn decrypt<T: Ciphertext>(
         &self,
         index: usize,
-        bytes: &mut [u8],
+        ciphertext: &mut T,
     ) -> Result<impl Future<Output = Result<(), DecryptError>>, DecryptError>;
 }
 
-impl<T: AsRef<[u8]>> EncryptionStore for T {
-    fn decrypt(
+pub trait Ciphertext {
+    fn file_offset(&self) -> u32;
+
+    fn body(&mut self) -> &mut [u8];
+
+    fn head(&self) -> [u8; BLOCK_SIZE];
+
+    fn tail(&self) -> [u8; BLOCK_SIZE];
+}
+
+impl<S: AsRef<[u8]>> EncryptionStore for S {
+    fn decrypt<T: Ciphertext>(
         &self,
         index: usize,
-        bytes: &mut [u8],
+        ciphertext: &mut T,
     ) -> Result<impl Future<Output = Result<(), DecryptError>>, DecryptError> {
         let store = self
             .as_ref()
@@ -57,7 +66,7 @@ impl<T: AsRef<[u8]>> EncryptionStore for T {
         let (header, data) =
             Header::try_ref_from_prefix(store).map_err(|_| DecryptError::Index(index))?;
 
-        Ok(header.decrypt(index, bytes, data))
+        Ok(header.decrypt(index, ciphertext, data))
     }
 }
 
@@ -70,7 +79,6 @@ where
     O: ByteOrderExt,
     E: Bhd5Entry<O>,
 {
-    const BLOCK_SIZE: u32 = 16;
     const MAX_BLOCK_COUNT: u32 = u16::MAX as u32 + 1;
 
     let file_offset = entry.file_offset();
@@ -99,7 +107,7 @@ where
             ));
         }
 
-        let block_count = len as u32 / BLOCK_SIZE;
+        let block_count = len as u32 / BLOCK_SIZE as u32;
         let mut start_offset = start as u32;
 
         for _ in 0..block_count / MAX_BLOCK_COUNT {
@@ -108,7 +116,7 @@ where
                 block_count: U16::MAX,
             });
 
-            start_offset += MAX_BLOCK_COUNT * BLOCK_SIZE;
+            start_offset += MAX_BLOCK_COUNT * BLOCK_SIZE as u32;
         }
 
         ranges.push(Range {
@@ -117,17 +125,14 @@ where
         });
     }
 
+    ranges.sort_by_key(|range| range.end_offset());
+
     let key = encryption.key;
     let range_count = u32::try_from(ranges.len())
         .and_then(U24::try_from)
         .map_err(|_| StoreError::TooManyRanges)?;
 
-    let header = Header::Aes128EcbNone(Aes128(Aes {
-        key,
-        iv: (),
-        range_count,
-    }));
-
+    let header = Header::Aes128EcbNone(Aes128 { key, range_count });
     let index = out.len();
 
     out.extend_from_slice(header.as_bytes());
@@ -140,7 +145,7 @@ where
     feature = "rkyv",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
 )]
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, TryFromBytes)]
+#[derive(Clone, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, TryFromBytes)]
 #[repr(u8)]
 enum Header {
     Aes128EcbNone(Aes128),
@@ -150,28 +155,16 @@ enum Header {
 enum AesError {
     #[error("malformed range")]
     Range,
-
-    #[error("block (at file offset {0}) is too short or out of bounds")]
-    Block(u32),
 }
 
 #[cfg_attr(
     feature = "rkyv",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
 )]
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
-#[repr(transparent)]
-struct Aes128(Aes<16>);
-
-#[cfg_attr(
-    feature = "rkyv",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
-)]
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[derive(Clone, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
 #[repr(C, align(1))]
-struct Aes<const N: usize, Iv = ()> {
-    key: [u8; N],
-    iv: Iv,
+struct Aes128 {
+    key: [u8; BLOCK_SIZE],
     range_count: U24,
 }
 
@@ -186,60 +179,110 @@ struct Range {
     block_count: U16,
 }
 
+impl Range {
+    fn end_offset(&self) -> u32 {
+        self.start_offset.get() + self.block_count.get() as u32 * BLOCK_SIZE as u32
+    }
+}
+
 impl Header {
-    fn decrypt(
+    fn decrypt<T: Ciphertext>(
         &self,
         index: usize,
-        bytes: &mut [u8],
+        ciphertext: &mut T,
         data: &[u8],
     ) -> impl Future<Output = Result<(), DecryptError>> {
         match self {
-            Self::Aes128EcbNone(Aes128(aes)) => {
+            Self::Aes128EcbNone(aes) => {
                 let key = aes::Aes128::new(aes.key.as_array_ref());
 
-                aes.decrypt_blocks(key, bytes, data)
+                aes.decrypt(key, ciphertext, data)
                     .map_err(move |e| match e {
                         AesError::Range => DecryptError::Index(index),
-                        AesError::Block(offset) => DecryptError::Block(offset),
                     })
             }
         }
     }
 }
 
-impl<const N: usize> Aes<N> {
-    async fn decrypt_blocks<C: BlockCipherDecrypt>(
+impl Aes128 {
+    async fn decrypt<T: Ciphertext>(
         &self,
-        cipher: C,
-        bytes: &mut [u8],
-        data: &[u8],
-    ) -> Result<(), AesError>
-    where
-        [u8; N]: AssocArraySize<Size = C::BlockSize> + AsArrayMut<u8>,
-    {
+        cipher: aes::Aes128,
+        ciphertext: &mut T,
+        ranges: &[u8],
+    ) -> Result<(), AesError> {
         let range_count = self.range_count.get() as usize;
-        let (ranges, _) = <[Range]>::ref_from_prefix_with_elems(data, range_count)
+        let (ranges, _) = <[Range]>::ref_from_prefix_with_elems(ranges, range_count)
             .map_err(|_| AesError::Range)?;
 
-        for range in ranges {
-            let start = range.start_offset.get() as usize;
-            let end = start + range.block_count.get() as usize * N;
+        let file_offset = ciphertext.file_offset();
+        let start_index = ranges.partition_point(|range| file_offset >= range.end_offset());
 
-            let len = bytes.len();
-            let range = bytes.get_mut(start..end).ok_or_else(|| {
-                let last_offset = len & N.wrapping_neg();
-                AesError::Block(last_offset as u32)
-            })?;
+        let head = ciphertext.head();
+        let tail = ciphertext.tail();
+
+        let bytes = ciphertext.body();
+        let len = bytes.len();
+
+        for range in &ranges[start_index..] {
+            let start_offset = range.start_offset.get();
+
+            if start_offset >= file_offset + len as u32 {
+                break;
+            }
+
+            let start = if start_offset < file_offset {
+                let left = (file_offset - start_offset) as usize % BLOCK_SIZE;
+                let left_len = BLOCK_SIZE - left;
+
+                let mid_len = left_len.min(bytes.len());
+
+                let right = left + mid_len;
+                let right_len = BLOCK_SIZE - right;
+
+                let mut block = [0; BLOCK_SIZE];
+
+                block[..left].copy_from_slice(&head[left_len..]);
+                block[left..right].copy_from_slice(&bytes[..mid_len]);
+                block[right..].copy_from_slice(&tail[..right_len]);
+
+                cipher.decrypt_block(block.as_array_mut());
+                bytes[..mid_len].copy_from_slice(&block[left..right]);
+
+                file_offset as usize + left_len
+            } else {
+                (start_offset - file_offset) as usize
+            };
+
+            let end = Ord::min(len, (range.end_offset() - file_offset) as usize);
+
+            if start >= end {
+                continue;
+            }
+
+            let range = &mut bytes[start..end];
+            let (blocks, rest) = range.as_chunks_mut::<BLOCK_SIZE>();
 
             async {
-                for block in range
-                    .chunks_exact_mut(N)
-                    .filter_map(<[_]>::as_mut_array::<N>)
-                {
+                for block in blocks {
                     cipher.decrypt_block(block.as_array_mut());
                 }
             }
-            .await
+            .await;
+
+            if !rest.is_empty() {
+                let mid = rest.len();
+                let right = BLOCK_SIZE - mid;
+
+                let mut block = [0; BLOCK_SIZE];
+
+                block[..mid].copy_from_slice(rest);
+                block[mid..].copy_from_slice(&tail[..right]);
+
+                cipher.decrypt_block(block.as_array_mut());
+                rest.copy_from_slice(&block[..mid]);
+            }
         }
 
         Ok(())

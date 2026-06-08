@@ -16,6 +16,7 @@ use crate::{
     filesystem::readonly::{Config, Normalize, ReadOnlyFilesystem, Rofs, RofsBuilder},
 };
 
+pub mod buffer;
 pub mod encryption;
 
 pub trait DvdbndFilesystem {
