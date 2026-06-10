@@ -300,8 +300,16 @@ struct Range {
 }
 
 impl Range {
+    fn block_count(&self) -> u32 {
+        self.block_count.get() as u32 + 1
+    }
+
+    fn start_offset(&self) -> u32 {
+        self.start_offset.get()
+    }
+
     fn end_offset(&self) -> u32 {
-        self.start_offset.get() + self.block_count.get() as u32 * BLOCK_SIZE as u32
+        self.start_offset() + self.block_count() * BLOCK_SIZE as u32
     }
 }
 
