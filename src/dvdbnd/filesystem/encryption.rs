@@ -7,9 +7,12 @@ use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
 
 use crate::{
-    dvdbnd::bhd5::{
-        ByteOrderExt,
-        format::{Encryption, FileEntry as Bhd5Entry},
+    dvdbnd::{
+        bhd5::{
+            ByteOrderExt,
+            format::{Encryption, FileEntry as Bhd5Entry},
+        },
+        filesystem::aligned::AlignedBufferRef,
     },
     unaligned::{U16, U24, U32},
 };
@@ -34,29 +37,42 @@ pub enum DecryptError {
     Index(usize),
 }
 
+#[derive(Debug)]
+pub struct Ciphertext<'a> {
+    body: &'a mut [u8],
+    head: [u8; BLOCK_SIZE],
+    tail: [u8; BLOCK_SIZE],
+    file_offset: u32,
+}
+
+#[derive(Default, Debug)]
+pub struct CiphertextBuffer {
+    inner: [Option<AlignedBufferRef>; 3],
+    pos: Pos,
+    is_pushed: bool,
+}
+
+#[derive(Clone, Copy, Default, Debug)]
+enum Pos {
+    _0 = 0,
+    #[default]
+    _1 = 1,
+    _2 = 2,
+}
+
 pub trait EncryptionStore {
-    fn decrypt<T: Ciphertext>(
+    fn decrypt(
         &self,
         index: usize,
-        ciphertext: &mut T,
+        ciphertext: Ciphertext<'_>,
     ) -> Result<impl Future<Output = Result<(), DecryptError>>, DecryptError>;
 }
 
-pub trait Ciphertext {
-    fn file_offset(&self) -> u32;
-
-    fn body(&mut self) -> &mut [u8];
-
-    fn head(&self) -> [u8; BLOCK_SIZE];
-
-    fn tail(&self) -> [u8; BLOCK_SIZE];
-}
-
 impl<S: AsRef<[u8]>> EncryptionStore for S {
-    fn decrypt<T: Ciphertext>(
+    fn decrypt(
         &self,
         index: usize,
-        ciphertext: &mut T,
+        ciphertext: Ciphertext<'_>,
     ) -> Result<impl Future<Output = Result<(), DecryptError>>, DecryptError> {
         let store = self
             .as_ref()
@@ -67,6 +83,107 @@ impl<S: AsRef<[u8]>> EncryptionStore for S {
             Header::try_ref_from_prefix(store).map_err(|_| DecryptError::Index(index))?;
 
         Ok(header.decrypt(index, ciphertext, data))
+    }
+}
+
+impl<'a> Ciphertext<'a> {
+    pub fn from_buffer(context: &'a mut CiphertextBuffer) -> Self {
+        let prev = context.prev();
+        let next = context.next();
+
+        let left = BLOCK_SIZE.saturating_sub(prev.len());
+        let right = prev.len().saturating_sub(BLOCK_SIZE);
+
+        let mut head = [0; BLOCK_SIZE];
+        head[left..].copy_from_slice(&prev[right..]);
+
+        let len = next.len().min(BLOCK_SIZE);
+
+        let mut tail = [0; BLOCK_SIZE];
+        tail[..len].copy_from_slice(&next[..len]);
+
+        let (body, file_offset) = context.curr();
+
+        Self {
+            body,
+            head,
+            tail,
+            file_offset: *file_offset,
+        }
+    }
+}
+
+impl CiphertextBuffer {
+    pub fn push(&mut self, buf: AlignedBufferRef) {
+        self.do_push(Some(buf));
+    }
+
+    pub fn finish(&mut self) {
+        self.do_push(None);
+    }
+
+    pub fn curr(&mut self) -> &mut AlignedBufferRef {
+        if self.has_predecessor() {
+            self.inner[self.pos.prev() as usize].as_mut().unwrap()
+        } else {
+            self.inner[self.pos as usize]
+                .as_mut()
+                .expect("must not be empty")
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.is_pushed
+    }
+
+    fn do_push(&mut self, buf: Option<AlignedBufferRef>) {
+        self.pos = self.pos.next();
+        self.inner[self.pos as usize] = buf;
+        self.is_pushed |= true;
+    }
+
+    fn prev(&self) -> &[u8] {
+        if !self.has_predecessor() {
+            return &[];
+        }
+
+        self.inner[self.pos.prev().prev() as usize]
+            .as_ref()
+            .map(|buf| compio::buf::IoBuf::as_init(&buf.0))
+            .unwrap_or(&[])
+    }
+
+    fn next(&self) -> &[u8] {
+        if !self.has_predecessor() {
+            return &[];
+        }
+
+        self.inner[self.pos as usize]
+            .as_ref()
+            .map(|buf| compio::buf::IoBuf::as_init(&buf.0))
+            .unwrap_or(&[])
+    }
+
+    fn has_predecessor(&self) -> bool {
+        self.inner[self.pos.prev() as usize].is_some()
+    }
+}
+
+impl Pos {
+    fn next(self) -> Self {
+        match self {
+            Self::_0 => Self::_1,
+            Self::_1 => Self::_2,
+            Self::_2 => Self::_0,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::_0 => Self::_2,
+            Self::_1 => Self::_0,
+            Self::_2 => Self::_1,
+        }
     }
 }
 
@@ -186,10 +303,10 @@ impl Range {
 }
 
 impl Header {
-    fn decrypt<T: Ciphertext>(
+    fn decrypt(
         &self,
         index: usize,
-        ciphertext: &mut T,
+        ciphertext: Ciphertext<'_>,
         data: &[u8],
     ) -> impl Future<Output = Result<(), DecryptError>> {
         match self {
@@ -206,37 +323,41 @@ impl Header {
 }
 
 impl Aes128 {
-    async fn decrypt<T: Ciphertext>(
+    async fn decrypt(
         &self,
         cipher: aes::Aes128,
-        ciphertext: &mut T,
+        ciphertext: Ciphertext<'_>,
         ranges: &[u8],
     ) -> Result<(), AesError> {
         let range_count = self.range_count.get() as usize;
         let (ranges, _) = <[Range]>::ref_from_prefix_with_elems(ranges, range_count)
             .map_err(|_| AesError::Range)?;
 
-        let file_offset = ciphertext.file_offset();
+        let file_offset = ciphertext.file_offset;
         let start_index = ranges.partition_point(|range| file_offset >= range.end_offset());
 
-        let head = ciphertext.head();
-        let tail = ciphertext.tail();
+        let head = ciphertext.head;
+        let tail = ciphertext.tail;
 
-        let bytes = ciphertext.body();
+        let bytes = ciphertext.body;
         let len = bytes.len();
 
         for range in &ranges[start_index..] {
-            let start_offset = range.start_offset.get();
+            let mut start_offset = range.start_offset.get();
 
             if start_offset >= file_offset + len as u32 {
                 break;
+            }
+
+            if let Some(delta) = file_offset.checked_sub(start_offset) {
+                start_offset += delta & (BLOCK_SIZE as u32).wrapping_neg();
             }
 
             let start = if start_offset < file_offset {
                 let left = (file_offset - start_offset) as usize % BLOCK_SIZE;
                 let left_len = BLOCK_SIZE - left;
 
-                let mid_len = left_len.min(bytes.len());
+                let mid_len = left_len.min(len);
 
                 let right = left + mid_len;
                 let right_len = BLOCK_SIZE - right;

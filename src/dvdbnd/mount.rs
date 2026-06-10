@@ -1,13 +1,14 @@
-use std::{ffi::OsStr, fs, mem::ManuallyDrop, num::NonZero, path::Path};
+use std::{ffi::OsStr, fs, io, mem::ManuallyDrop, num::NonZero, path::Path, pin::pin, sync::Arc};
 
 use color_eyre::eyre;
 use compio::{
-    buf::{IoBuf, Slice, buf_try},
+    buf::SetLen,
     dispatcher::Dispatcher,
     driver::{AsRawFd, RawFd},
     fs::File,
     runtime::Runtime,
 };
+use futures_channel::oneshot::Receiver;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use rayon::{
     ThreadPoolBuilder,
@@ -20,8 +21,9 @@ use crate::{
         bhd5::FileAny,
         dict::Dictionary,
         filesystem::{
-            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, buffer::AlignedBuffer,
-            encryption::EncryptionStore,
+            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder,
+            aligned::{self, AlignedBufferRef},
+            encryption::{Ciphertext, CiphertextBuffer, EncryptionStore},
         },
         keys::Keys,
     },
@@ -36,7 +38,7 @@ mod projfs;
 
 #[derive(Debug)]
 pub struct DvdbndMount<F: DvdbndFilesystem> {
-    fs: F,
+    fs: Arc<F>,
     dispatcher: Dispatcher,
     bdt_reader: BdtReader,
     #[cfg(unix)]
@@ -116,6 +118,7 @@ where
     where
         P: IntoIterator<Item: AsRef<Path>>,
     {
+        let fs = Arc::new(fs);
         let dispatcher = Dispatcher::new()?;
         let bdt_reader = BdtReader::from_bdts(paths)?;
 
@@ -128,11 +131,13 @@ where
         })
     }
 
-    async fn read_file(
+    fn dispatch_file(
         &self,
         inode: u64,
-        alignment: Option<NonZero<usize>>,
-    ) -> eyre::Result<Slice<AlignedBuffer>> {
+        file_offset: u64,
+        len: u32,
+        f: impl AsyncFn(&AlignedBufferRef) -> eyre::Result<()> + Send + 'static,
+    ) -> eyre::Result<Receiver<eyre::Result<()>>> {
         let fs = self.fs.as_rofs();
 
         let file = match fs.entry(inode, true) {
@@ -141,18 +146,136 @@ where
             Err(e) => return Err(e.into()),
         };
 
-        const DEFAULT_BLOCK_ALIGNMENT: NonZero<usize> =
-            const { NonZero::<usize>::new(4096).unwrap() };
+        let file_len = file.len();
+        let file_unpadded_len = file.unpadded_len();
 
-        let alignment = alignment.unwrap_or(DEFAULT_BLOCK_ALIGNMENT);
-        let encryption_store = self.fs.encryption_store();
+        let file_offset = file_offset.min(file_len as u64);
+        let len = len.min(file_len - file_offset as u32);
 
-        let slice = self
+        let file_start = file.data_offset();
+        let data_start = file_start + file_offset;
+
+        let bdt = self.bdt_reader.bdts[file.src_index()];
+
+        if let Some(encryption_index) = file.encryption_index() {
+            return self.dispatch_decrypt_file(
+                bdt,
+                data_start,
+                len,
+                file_start,
+                file_len,
+                file_unpadded_len,
+                encryption_index,
+                f,
+            );
+        }
+
+        let dispatched = self
             .bdt_reader
-            .read_file(file, alignment, encryption_store)
-            .await?;
+            .dispatcher
+            .dispatch(async move || {
+                // SAFETY: this is the thread this file is attached to.
+                let bdt_file = unsafe { bdt.as_file() };
 
-        Ok(slice)
+                let mut stream = pin!(aligned::stream_read(
+                    bdt_file, data_start, len, file_start, file_len
+                ));
+
+                while let Some(buf) = stream.try_next().await? {
+                    if !buf.0.is_empty() {
+                        f(&buf).await?;
+                    }
+                }
+
+                eyre::Ok(())
+            })
+            .map_err(|_| io::Error::from(io::ErrorKind::ResourceBusy))?;
+
+        Ok(dispatched)
+    }
+
+    fn dispatch_decrypt_file(
+        &self,
+        bdt: Bdt,
+        data_start: u64,
+        len: u32,
+        file_start: u64,
+        file_len: u32,
+        file_unpadded_len: u32,
+        encryption_index: usize,
+        f: impl AsyncFn(&AlignedBufferRef) -> eyre::Result<()> + Send + 'static,
+    ) -> eyre::Result<Receiver<eyre::Result<()>>> {
+        let start_offset = (file_start - data_start) as u32;
+
+        let fs = self.fs.clone();
+
+        let dispatched = self
+            .bdt_reader
+            .dispatcher
+            .dispatch(async move || {
+                let encryption_store = fs.encryption_store();
+
+                // SAFETY: this is the thread this file is attached to.
+                let bdt_file = unsafe { bdt.as_file() };
+
+                let mut stream = pin!(aligned::stream_read_over(
+                    bdt_file, data_start, len, file_start, file_len
+                ));
+
+                let mut cbuf = CiphertextBuffer::default();
+
+                let mut is_done = false;
+                let mut is_last = false;
+
+                while !is_done {
+                    if is_last {
+                        is_done = true;
+                        cbuf.finish();
+                    } else if let Some(buf) = stream.try_next().await? {
+                        let file_offset = buf.1;
+
+                        let is_interesting = start_offset <= file_offset && file_offset < len;
+                        let is_first = cbuf.is_empty();
+
+                        cbuf.push(buf);
+
+                        if !is_interesting || is_first {
+                            continue;
+                        }
+                    } else {
+                        is_last = true;
+                    }
+
+                    let ciphertext = Ciphertext::from_buffer(&mut cbuf);
+
+                    encryption_store
+                        .decrypt(encryption_index, ciphertext)?
+                        .await?;
+
+                    let buf = cbuf.curr();
+
+                    if let (buffer, file_offset) = buf
+                        && let buffer_end = *file_offset + buffer.len() as u32
+                        && let Some(padding) = (buffer_end).checked_sub(file_unpadded_len)
+                    {
+                        let padded_len = buffer.len();
+                        let unpadded_len = padded_len.saturating_sub(padding as usize);
+
+                        unsafe {
+                            buf.0.set_len(unpadded_len);
+                        }
+                    }
+
+                    if !buf.0.is_empty() {
+                        f(buf).await?;
+                    }
+                }
+
+                eyre::Ok(())
+            })
+            .map_err(|_| io::Error::from(io::ErrorKind::ResourceBusy))?;
+
+        Ok(dispatched)
     }
 }
 
@@ -162,6 +285,7 @@ impl BdtReader {
         P: IntoIterator<Item: AsRef<Path>>,
     {
         let dispatcher = Dispatcher::builder()
+            .proactor_builder(aligned::proactor_builder())
             .worker_threads(NonZero::<usize>::MIN)
             .build()?;
 
@@ -181,42 +305,6 @@ impl BdtReader {
             dispatcher,
         })
     }
-
-    async fn read_file<F: DvdbndFile>(
-        &self,
-        file: &F,
-        alignment: NonZero<usize>,
-        encryption_store: &impl EncryptionStore,
-    ) -> eyre::Result<Slice<AlignedBuffer>> {
-        let src_index = file.src_index();
-        let data_offset = file.data_offset();
-        let file_len = file.len() as usize;
-
-        let mut buf = AlignedBuffer::new(file_len, alignment);
-
-        let bdt = self.bdts[src_index];
-        let res = self
-            .dispatcher
-            .dispatch(async move || {
-                // SAFETY: this is the thread this file is attached to.
-                let bdt_file = unsafe { bdt.as_file() };
-                buf.fill(&*bdt_file, data_offset, 0).await
-            })?
-            .await?;
-
-        (_, buf) = buf_try!(@try res);
-
-        if let Some(index) = file.encryption_index() {
-            encryption_store.decrypt(index, &mut buf)?.await?;
-        }
-
-        let actual_file_len = match file.unpadded_len() {
-            0 => file_len as usize,
-            len => len as usize,
-        };
-
-        Ok(buf.slice(..actual_file_len))
-    }
 }
 
 impl Bdt {
@@ -225,15 +313,15 @@ impl Bdt {
         Ok(Self { file })
     }
 
-    unsafe fn as_file(&self) -> ManuallyDrop<File> {
+    unsafe fn as_file(&self) -> File {
         cfg_select! {
             unix => unsafe {
                 use compio::driver::FromRawFd;
-                ManuallyDrop::new(File::from_raw_fd(self.file))
+                (*ManuallyDrop::new(File::from_raw_handle(self.file))).clone()
             }
             windows => unsafe {
                 use std::os::windows::prelude::FromRawHandle;
-                ManuallyDrop::new(File::from_raw_handle(self.file))
+                (*ManuallyDrop::new(File::from_raw_handle(self.file))).clone()
             },
         }
     }

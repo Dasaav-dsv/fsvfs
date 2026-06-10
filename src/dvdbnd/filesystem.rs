@@ -16,7 +16,7 @@ use crate::{
     filesystem::readonly::{Config, Normalize, ReadOnlyFilesystem, Rofs, RofsBuilder},
 };
 
-pub mod buffer;
+pub mod aligned;
 pub mod encryption;
 
 pub trait DvdbndFilesystem {
@@ -258,7 +258,10 @@ impl DvdbndFile for File {
 
     #[inline]
     fn unpadded_len(&self) -> u32 {
-        self.unpadded_len
+        match self.unpadded_len {
+            0 => self.len(),
+            len => len,
+        }
     }
 
     #[inline]
@@ -300,7 +303,10 @@ impl DvdbndFile for ArchivedFile {
 
     #[inline]
     fn unpadded_len(&self) -> u32 {
-        self.unpadded_len.to_native()
+        match self.unpadded_len.to_native() {
+            0 => self.len(),
+            len => len,
+        }
     }
 
     #[inline]

@@ -59,7 +59,7 @@ where
         let kind = file_type(entry);
 
         let (size, blocks) = if let Entry::File(data) = entry {
-            let size = data.len();
+            let size = data.unpadded_len();
             (size as u64, size.div_ceil(BLOCK_SIZE) as u64)
         } else {
             (0, 0)

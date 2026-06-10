@@ -4,7 +4,6 @@ use std::{
     fs,
     io::Write,
     mem::{self, ManuallyDrop},
-    num::NonZero,
     ops::Range,
     os::windows::fs::OpenOptionsExt,
     panic::{self, AssertUnwindSafe},
@@ -16,16 +15,15 @@ use std::{
 };
 
 use color_eyre::eyre::{self, eyre};
-use futures_util::{FutureExt, StreamExt, TryStreamExt, stream};
+use futures_util::FutureExt;
 use fxhash::FxBuildHasher;
 use papaya::HashMap as PapayaMap;
-use parking_lot::RwLock;
 use tracing::{info, warn};
 use windows::{
     Win32::{
         Foundation::{
-            E_ABORT, E_FAIL, E_INVALIDARG, ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND,
-            ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_OFFSET_ALIGNMENT_VIOLATION, S_OK,
+            E_ABORT, E_FAIL, E_INVALIDARG, ERROR_CANCELLED, ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND,
+            ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, S_OK,
         },
         Storage::{
             FileSystem::FILE_ATTRIBUTE_HIDDEN,
@@ -33,9 +31,8 @@ use windows::{
                 PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN,
                 PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_FILE_BASIC_INFO, PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
                 PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION_MAPPING, PRJ_NOTIFY_NONE,
-                PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
-                PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjCompleteCommand, PrjFileNameCompare,
-                PrjFileNameMatch, PrjFillDirEntryBuffer, PrjGetVirtualizationInstanceInfo,
+                PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS, PrjCompleteCommand,
+                PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
                 PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
                 PrjWriteFileData, PrjWritePlaceholderInfo,
             },
@@ -46,7 +43,7 @@ use windows::{
 
 use crate::{
     dvdbnd::{
-        filesystem::DvdbndFilesystem,
+        filesystem::{DvdbndFilesystem, aligned::AlignedBufferRef},
         mount::{DvdbndFile, DvdbndMount},
     },
     filesystem::readonly::{Entry, ReadOnlyFilesystem, RofsError},
@@ -59,7 +56,6 @@ struct MountContext<F: DvdbndFilesystem> {
     mount: DvdbndMount<F>,
     enumerations: PapayaMap<GUID, Arc<DirEnumeration>, FxBuildHasher>,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-    instance_alignment: RwLock<Option<NonZero<u32>>>,
     mountpoint: HSTRING,
     weak_ptr: AtomicPtr<Self>,
 }
@@ -96,13 +92,7 @@ where
     fn file_basic_info<T: DvdbndFile>(&self, entry: &Entry<'_, T>) -> PRJ_FILE_BASIC_INFO {
         let (is_dir, file_size) = match entry {
             Entry::Dir(_) => (true, 0),
-            Entry::File(file) => (
-                false,
-                match file.unpadded_len() {
-                    0 => file.len(),
-                    len => len,
-                },
-            ),
+            Entry::File(file) => (false, file.unpadded_len()),
             Entry::Link(_) => (false, 0),
         };
 
@@ -123,7 +113,6 @@ where
             mount,
             enumerations: PapayaMap::default(),
             context: Default::default(),
-            instance_alignment: RwLock::new(None),
             mountpoint,
             weak_ptr: AtomicPtr::new(Weak::<Self>::new().as_ptr() as *mut Self),
         }
@@ -168,26 +157,6 @@ where
         mem::forget(weak);
 
         Ok(mount_context)
-    }
-
-    fn instance_alignment(&self) -> WindowsResult<NonZero<u32>> {
-        if let Some(alignment) = &*self.instance_alignment.read() {
-            return Ok(*alignment);
-        }
-
-        let mut info = PRJ_VIRTUALIZATION_INSTANCE_INFO::default();
-
-        unsafe {
-            PrjGetVirtualizationInstanceInfo(self.context, &mut info)?;
-        }
-
-        let Some(alignment) = NonZero::new(info.WriteAlignment) else {
-            return Err(ERROR_OFFSET_ALIGNMENT_VIOLATION.into());
-        };
-
-        *self.instance_alignment.write() = Some(alignment);
-
-        Ok(alignment)
     }
 
     unsafe extern "system" fn start_directory_enumeration(
@@ -315,8 +284,8 @@ where
 
     unsafe extern "system" fn get_file_data(
         callbackdata: &PRJ_CALLBACK_DATA,
-        _byteoffset: u64,
-        _length: u32,
+        byteoffset: u64,
+        length: u32,
     ) -> HRESULT {
         Self::call(callbackdata, |context| {
             let path = unsafe { callbackdata.FilePathName.to_string()? };
@@ -326,29 +295,33 @@ where
             };
 
             let stream_id = callbackdata.DataStreamId;
+            let dispatch = {
+                let context = context.clone();
+                async move |(buf, file_offset): &AlignedBufferRef| {
+                    let ptr = buf.as_ptr() as *const c_void;
+
+                    let byteoffset = *file_offset as u64;
+                    let len = buf.len() as u32;
+
+                    unsafe {
+                        PrjWriteFileData(context.context, &stream_id, ptr, byteoffset, len)?;
+                    }
+
+                    Ok(())
+                }
+            };
 
             Self::call_async(callbackdata, async move |context| {
-                let alignment = context.instance_alignment()?;
-
-                let res = context
+                let dispatched = context
                     .mount
-                    .read_file(inode, alignment.try_into().ok())
+                    .dispatch_file(inode, byteoffset, length, dispatch)
+                    .map_err(|_| WindowsError::from_hresult(E_FAIL))?
                     .await;
 
-                let slice = res.map_err(|e| WindowsError::new(E_FAIL, e.to_string()))?;
+                let res = dispatched
+                    .map_err(|_| WindowsError::from_hresult(ERROR_CANCELLED.to_hresult()))?;
 
-                const CHUNK_SIZE: usize = 4096 * 16;
-
-                stream::iter(slice.chunks(CHUNK_SIZE).enumerate())
-                    .map(Ok)
-                    .try_for_each(async |(i, chunk)| {
-                        let ptr = chunk.as_ptr() as *const c_void;
-                        let offset = (i * CHUNK_SIZE) as u64;
-                        let len = chunk.len() as u32;
-
-                        unsafe { PrjWriteFileData(context.context, &stream_id, ptr, offset, len) }
-                    })
-                    .await
+                res.map_err(|_| WindowsError::from_hresult(E_FAIL))
             })
             .ok()
         })
