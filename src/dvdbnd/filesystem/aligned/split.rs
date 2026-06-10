@@ -7,8 +7,6 @@ use std::{
 
 use compio::buf::{IoBufMut, SetLen};
 
-use crate::dvdbnd::filesystem::aligned::DynAlignedBuf;
-
 pub struct Split<T> {
     inner: Rc<UnsafeCell<T>>,
     ptr: NonNull<[u8]>,
