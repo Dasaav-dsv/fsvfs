@@ -1,7 +1,7 @@
 use std::{cell::RefCell, ffi::OsStr, fs, io, path::Path, pin::pin, sync::Arc};
 
 use color_eyre::eyre;
-use compio::{buf::SetLen, dispatcher::Dispatcher, fs::File};
+use compio::{dispatcher::Dispatcher, fs::File};
 use futures_util::TryStreamExt;
 use fxhash::{FxBuildHasher, FxHashMap};
 use rayon::{
@@ -16,7 +16,7 @@ use crate::{
         dict::Dictionary,
         filesystem::{
             DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder,
-            aligned::{self, AlignedBufferRef},
+            aligned::{self, AlignedBuf},
             encryption::{Ciphertext, CiphertextBuffer, EncryptionStore},
         },
         keys::Keys,
@@ -128,7 +128,7 @@ where
         inode: u64,
         file_offset: u64,
         len: u32,
-        f: impl AsyncFn(&AlignedBufferRef) -> eyre::Result<()> + Send + 'static,
+        mut f: impl FnMut(&[u8], u32) -> eyre::Result<()> + Send + 'static,
     ) -> eyre::Result<()> {
         let fs = self.fs.as_rofs();
 
@@ -168,9 +168,11 @@ where
             bdt, data_start, len, file_start, file_len
         ));
 
-        while let Some(buf) = stream.try_next().await? {
-            if !buf.0.is_empty() {
-                f(&buf).await?;
+        while let Some((buffer, file_offset)) = stream.try_next().await? {
+            if !buffer.is_empty()
+                && let Ok(file_offset) = u32::try_from(file_offset)
+            {
+                f((*buffer).as_ref(), file_offset)?;
             }
         }
 
@@ -186,17 +188,13 @@ where
         file_len: u32,
         file_unpadded_len: u32,
         encryption_index: usize,
-        f: impl AsyncFn(&AlignedBufferRef) -> eyre::Result<()> + Send + 'static,
+        mut f: impl FnMut(&[u8], u32) -> eyre::Result<()> + Send + 'static,
     ) -> eyre::Result<()> {
         let start_offset = (file_start - data_start) as u32;
 
-        let fs = self.fs.clone();
+        let encryption_store = self.fs.encryption_store();
 
-        let encryption_store = fs.encryption_store();
-
-        let mut stream = pin!(aligned::stream_read_context(
-            bdt, data_start, len, file_start, file_len
-        ));
+        let mut stream = aligned::stream_read_context(bdt, data_start, len, file_start, file_len);
 
         let mut cbuf = CiphertextBuffer::default();
 
@@ -208,18 +206,19 @@ where
                 is_done = true;
                 cbuf.finish();
             } else if let Some(buf) = stream.try_next().await? {
-                let file_offset = buf.1;
-
-                let is_interesting = start_offset <= file_offset && file_offset < len;
                 let is_first = cbuf.is_empty();
-
                 cbuf.push(buf);
 
-                if !is_interesting || is_first {
+                if is_first {
                     continue;
                 }
             } else {
                 is_last = true;
+            }
+
+            let file_offset = cbuf.curr().1;
+            if start_offset as i64 > file_offset || file_offset > len as i64 {
+                continue;
             }
 
             let ciphertext = Ciphertext::from_buffer(&mut cbuf);
@@ -228,22 +227,21 @@ where
                 .decrypt(encryption_index, ciphertext)?
                 .await?;
 
-            let buf = cbuf.curr();
+            let curr = cbuf.curr();
 
-            if let (buffer, file_offset) = buf
-                && let buffer_end = *file_offset + buffer.len() as u32
-                && let Some(padding) = (buffer_end).checked_sub(file_unpadded_len)
-            {
-                let padded_len = buffer.len();
-                let unpadded_len = padded_len.saturating_sub(padding as usize);
+            let buffer = &mut curr.0;
+            let file_offset = curr.1 as u32;
 
-                unsafe {
-                    buf.0.set_len(unpadded_len);
-                }
+            let buffer_len = buffer.len() as u32;
+            let buffer_end = file_offset + buffer_len;
+
+            if let Some(padding) = buffer_end.checked_sub(file_unpadded_len) {
+                let unpadded_len = buffer_len.saturating_sub(padding);
+                buffer.truncate(unpadded_len as usize);
             }
 
-            if !buf.0.is_empty() {
-                f(buf).await?;
+            if !buffer.is_empty() {
+                f((**buffer).as_ref(), file_offset)?;
             }
         }
 

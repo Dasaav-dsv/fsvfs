@@ -12,7 +12,7 @@ use crate::{
             ByteOrderExt,
             format::{Encryption, FileEntry as Bhd5Entry},
         },
-        filesystem::aligned::AlignedBufferRef,
+        filesystem::aligned::AlignedDynBufferRef,
     },
     unaligned::{U16, U24, U32},
 };
@@ -45,9 +45,9 @@ pub struct Ciphertext<'a> {
     file_offset: u32,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct CiphertextBuffer {
-    inner: [Option<AlignedBufferRef>; 3],
+    inner: [Option<AlignedDynBufferRef>; 3],
     pos: Pos,
     is_pushed: bool,
 }
@@ -104,17 +104,20 @@ impl<'a> Ciphertext<'a> {
 
         let (body, file_offset) = context.curr();
 
+        let file_offset =
+            u32::try_from(*file_offset).expect("current file offset must not be negative");
+
         Self {
             body,
             head,
             tail,
-            file_offset: *file_offset,
+            file_offset,
         }
     }
 }
 
 impl CiphertextBuffer {
-    pub fn push(&mut self, buf: AlignedBufferRef) {
+    pub fn push(&mut self, buf: AlignedDynBufferRef) {
         self.do_push(Some(buf));
     }
 
@@ -122,7 +125,7 @@ impl CiphertextBuffer {
         self.do_push(None);
     }
 
-    pub fn curr(&mut self) -> &mut AlignedBufferRef {
+    pub fn curr(&mut self) -> &mut AlignedDynBufferRef {
         if self.has_predecessor() {
             self.inner[self.pos.prev() as usize].as_mut().unwrap()
         } else {
@@ -136,7 +139,7 @@ impl CiphertextBuffer {
         !self.is_pushed
     }
 
-    fn do_push(&mut self, buf: Option<AlignedBufferRef>) {
+    fn do_push(&mut self, buf: Option<AlignedDynBufferRef>) {
         self.pos = self.pos.next();
         self.inner[self.pos as usize] = buf;
         self.is_pushed |= true;
@@ -149,7 +152,7 @@ impl CiphertextBuffer {
 
         self.inner[self.pos.prev().prev() as usize]
             .as_ref()
-            .map(|buf| compio::buf::IoBuf::as_init(&buf.0))
+            .map(|buf| &**buf.0)
             .unwrap_or(&[])
     }
 
@@ -160,7 +163,7 @@ impl CiphertextBuffer {
 
         self.inner[self.pos as usize]
             .as_ref()
-            .map(|buf| compio::buf::IoBuf::as_init(&buf.0))
+            .map(|buf| &**buf.0)
             .unwrap_or(&[])
     }
 

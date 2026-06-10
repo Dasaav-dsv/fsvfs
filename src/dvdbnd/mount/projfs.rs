@@ -43,7 +43,7 @@ use windows::{
 
 use crate::{
     dvdbnd::{
-        filesystem::{DvdbndFilesystem, aligned::AlignedBufferRef},
+        filesystem::DvdbndFilesystem,
         mount::{DvdbndFile, DvdbndMount},
     },
     filesystem::readonly::{Entry, ReadOnlyFilesystem, RofsError},
@@ -297,14 +297,15 @@ where
             let stream_id = callbackdata.DataStreamId;
             let dispatch = {
                 let context = context.clone();
-                async move |(buf, file_offset): &AlignedBufferRef| {
-                    let ptr = buf.as_ptr() as *const c_void;
-
-                    let byteoffset = *file_offset as u64;
-                    let len = buf.len() as u32;
-
+                move |buf: &[u8], file_offset: u32| {
                     unsafe {
-                        PrjWriteFileData(context.context, &stream_id, ptr, byteoffset, len)?;
+                        PrjWriteFileData(
+                            context.context,
+                            &stream_id,
+                            buf.as_ptr() as *const c_void,
+                            file_offset as u64,
+                            buf.len() as u32,
+                        )?;
                     }
 
                     Ok(())
