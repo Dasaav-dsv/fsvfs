@@ -14,7 +14,7 @@ use crate::{
         },
         filesystem::aligned::AlignedDynBufferRef,
     },
-    unaligned::{U16, U24, U32},
+    unaligned::{U24, U32},
 };
 
 pub const BLOCK_SIZE: usize = 16;
@@ -199,8 +199,6 @@ where
     O: ByteOrderExt,
     E: Bhd5Entry<O>,
 {
-    const MAX_BLOCK_COUNT: u32 = u16::MAX as u32 + 1;
-
     let file_offset = entry.file_offset();
     let file_size = entry.file_size() as u64;
 
@@ -228,20 +226,10 @@ where
         }
 
         let block_count = len as u32 / BLOCK_SIZE as u32;
-        let mut start_offset = start as u32;
-
-        for _ in 0..block_count / MAX_BLOCK_COUNT {
-            ranges.push(Range {
-                start_offset: U32::new(start_offset),
-                block_count: U16::MAX,
-            });
-
-            start_offset += MAX_BLOCK_COUNT * BLOCK_SIZE as u32;
-        }
 
         ranges.push(Range {
-            start_offset: U32::new(start_offset),
-            block_count: U16::new((block_count % MAX_BLOCK_COUNT) as u16),
+            start_offset: U32::new(start as u32),
+            block_count: U32::new(block_count),
         });
     }
 
@@ -296,12 +284,12 @@ struct Aes128 {
 #[repr(C, align(1))]
 struct Range {
     start_offset: U32,
-    block_count: U16,
+    block_count: U32,
 }
 
 impl Range {
     fn block_count(&self) -> u32 {
-        self.block_count.get() as u32 + 1
+        self.block_count.get()
     }
 
     fn start_offset(&self) -> u32 {
