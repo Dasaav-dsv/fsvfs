@@ -42,7 +42,7 @@ pub fn stream_read(
     })
 }
 
-pub fn stream_read_over(
+pub fn stream_read_context(
     file: File,
     start: u64,
     len: u32,
@@ -50,6 +50,10 @@ pub fn stream_read_over(
     file_len: u32,
 ) -> impl Stream<Item = io::Result<AlignedBufferRef>> {
     let (end, file_end) = end_bounds(start, len, file_start, file_len);
+
+    if len < (BUFFER_LEN - ALIGNMENT.get()) as u32 {
+        // TODO: single chunk read with Slice<BufferRef>
+    }
 
     let head = iter::once({
         let pos = start.saturating_sub(BUFFER_LEN as u64).max(file_start);

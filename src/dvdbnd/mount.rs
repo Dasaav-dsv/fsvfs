@@ -194,7 +194,7 @@ where
 
         let encryption_store = fs.encryption_store();
 
-        let mut stream = pin!(aligned::stream_read_over(
+        let mut stream = pin!(aligned::stream_read_context(
             bdt, data_start, len, file_start, file_len
         ));
 
@@ -262,15 +262,13 @@ impl BdtTls {
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
-        Self {
-            paths,
-            // files: ThreadLocal::new(),
-        }
+        Self { paths }
     }
 
     async fn open(&self, bdt_index: usize) -> io::Result<File> {
         thread_local! {
-            static MAP: RefCell<FxHashMap<Box<Path>, File>> = const { RefCell::new(FxHashMap::with_hasher(FxBuildHasher::new())) };
+            static MAP: RefCell<FxHashMap<Box<Path>, File>> =
+                const { RefCell::new(FxHashMap::with_hasher(FxBuildHasher::new())) };
         }
 
         let path = &self.paths[bdt_index];
