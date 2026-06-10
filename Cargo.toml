@@ -21,7 +21,6 @@ compio = { version = "0.19.0", default-features = false, features = [
     "fs",
 ] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
-futures-channel = "0.3.32"
 futures-util = "0.3.32"
 fxhash = "0.2.1"
 hashbrown = "0.17.1"

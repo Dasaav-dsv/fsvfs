@@ -123,7 +123,7 @@ struct AlignedBuffers<const N: usize>(MaybeUninit<[u8; N]>);
 const _: () = assert!(align_of::<AlignedBuffers<1>>() == ALIGNMENT.get());
 
 impl AlignedBufferAllocator {
-    const BUFFER_BLOCKS: usize = 1;
+    const BUFFER_BLOCKS: usize = 4;
 
     const POOL_SIZE: NonZero<usize> = NonZero::new(usize::BITS as usize).unwrap();
     const BUFFER_LEN: usize = Self::BUFFER_BLOCKS * ALIGNMENT.get();

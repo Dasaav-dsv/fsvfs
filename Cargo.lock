@@ -334,9 +334,9 @@ dependencies = [
 
 [[package]]
 name = "compio-driver"
-version = "0.12.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bb85cde3af21a2baaaa6eb40dada718d8ef2ac4a1f4acf671091dea13f3f43d"
+checksum = "9e5b3d2a85a012970cd7c879412a388b1fb70e152286da98f35c355c47f0434c"
 dependencies = [
  "bitflags",
  "cfg_aliases",
@@ -685,7 +685,6 @@ dependencies = [
  "compio",
  "ctrlc",
  "fuser",
- "futures-channel",
  "futures-util",
  "fxhash",
  "hashbrown 0.17.1",

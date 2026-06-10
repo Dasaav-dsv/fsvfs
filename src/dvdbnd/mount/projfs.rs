@@ -15,14 +15,14 @@ use std::{
 };
 
 use color_eyre::eyre::{self, eyre};
-use futures_util::FutureExt;
+use futures_util::{FutureExt, TryFutureExt};
 use fxhash::FxBuildHasher;
 use papaya::HashMap as PapayaMap;
 use tracing::{info, warn};
 use windows::{
     Win32::{
         Foundation::{
-            E_ABORT, E_FAIL, E_INVALIDARG, ERROR_CANCELLED, ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND,
+            E_ABORT, E_FAIL, E_INVALIDARG, ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND,
             ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, S_OK,
         },
         Storage::{
@@ -312,16 +312,11 @@ where
             };
 
             Self::call_async(callbackdata, async move |context| {
-                let dispatched = context
+                context
                     .mount
-                    .dispatch_file(inode, byteoffset, length, dispatch)
-                    .map_err(|_| WindowsError::from_hresult(E_FAIL))?
-                    .await;
-
-                let res = dispatched
-                    .map_err(|_| WindowsError::from_hresult(ERROR_CANCELLED.to_hresult()))?;
-
-                res.map_err(|_| WindowsError::from_hresult(E_FAIL))
+                    .read_file(inode, byteoffset, length, dispatch)
+                    .map_err(|e| WindowsError::new(E_FAIL, e.to_string()))
+                    .await
             })
             .ok()
         })
