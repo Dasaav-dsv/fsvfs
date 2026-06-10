@@ -195,17 +195,11 @@ where
         let encryption_store = self.fs.encryption_store();
 
         let mut stream = aligned::stream_read_context(bdt, data_start, len, file_start, file_len);
-
         let mut cbuf = CiphertextBuffer::default();
-
-        let mut is_done = false;
         let mut is_last = false;
 
-        while !is_done {
-            if is_last {
-                is_done = true;
-                cbuf.finish();
-            } else if let Some(buf) = stream.try_next().await? {
+        while !is_last {
+            if let Some(buf) = stream.try_next().await? {
                 let is_first = cbuf.is_empty();
                 cbuf.push(buf);
 
@@ -214,6 +208,7 @@ where
                 }
             } else {
                 is_last = true;
+                cbuf.finish();
             }
 
             let file_offset = cbuf.curr().1;
@@ -241,7 +236,7 @@ where
             }
 
             if !buffer.is_empty() {
-                f((**buffer).as_ref(), file_offset)?;
+                f(buffer, file_offset)?;
             }
         }
 
