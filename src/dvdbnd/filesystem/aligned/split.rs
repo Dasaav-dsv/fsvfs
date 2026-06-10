@@ -89,6 +89,8 @@ impl<T> DerefMut for Split<T> {
 
 impl<T> SetLen for Split<T> {
     unsafe fn set_len(&mut self, len: usize) {
-        self.truncate(len);
+        if len < self.len() {
+            self.ptr = NonNull::slice_from_raw_parts(self.ptr.cast(), len);
+        }
     }
 }
