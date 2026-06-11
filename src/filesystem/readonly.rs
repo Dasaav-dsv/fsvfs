@@ -69,11 +69,11 @@ pub trait ReadOnlyFilesystem {
     fn entries_iter<R>(
         &self,
         range: R,
-    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
+    ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
     where
         R: RangeBounds<u64>;
 
-    fn file_iter(&self) -> impl Iterator<Item = &Self::File>;
+    fn file_iter(&self) -> impl ExactSizeIterator<Item = &Self::File>;
 
     fn file_index(&self, entry: &Entry<'_, Self::File>) -> Result<usize, RofsError>;
 
@@ -364,7 +364,7 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     fn entries_iter<R>(
         &self,
         range: R,
-    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
+    ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
     where
         R: RangeBounds<u64>,
     {
@@ -386,7 +386,7 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     }
 
     #[inline]
-    fn file_iter(&self) -> impl Iterator<Item = &Self::File> {
+    fn file_iter(&self) -> impl ExactSizeIterator<Item = &Self::File> {
         self.files.iter()
     }
 
@@ -429,7 +429,7 @@ where
     fn entries_iter<R>(
         &self,
         range: R,
-    ) -> Result<impl Iterator<Item = Entry<'_, Self::File>>, RofsError>
+    ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
     where
         R: RangeBounds<u64>,
     {
@@ -451,7 +451,7 @@ where
     }
 
     #[inline]
-    fn file_iter(&self) -> impl Iterator<Item = &Self::File> {
+    fn file_iter(&self) -> impl ExactSizeIterator<Item = &Self::File> {
         self.files.iter()
     }
 

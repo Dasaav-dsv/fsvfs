@@ -1,7 +1,8 @@
 use std::{
     ffi::OsStr,
-    fs,
-    io::{self, SeekFrom},
+    fs, io,
+    ops::Deref,
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -9,16 +10,15 @@ use color_eyre::eyre;
 use fuser::{
     AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags,
     Generation, INodeNo, KernelConfig, LockOwner, MountOption, OpenAccMode, OpenFlags, ReplyAttr,
-    ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen,
-    ReplyStatfs, ReplyXattr, Request, spawn_mount2,
+    ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs,
+    ReplyXattr, Request, spawn_mount2,
 };
-use libc::{SEEK_CUR, SEEK_END, SEEK_SET};
 use tracing::warn;
 
 use crate::{
     dvdbnd::{
         filesystem::{DvdbndFile, DvdbndFilesystem},
-        mount::{DvdbndMount, MakeReaderError},
+        mount::DvdbndMount,
     },
     filesystem::readonly::{Entry, ReadOnlyFilesystem},
     thread::{OnInterrupt, run_until_interrupted},
@@ -29,6 +29,9 @@ const BLOCK_SIZE: u32 = 512;
 
 const CACHE_TTL: Duration = Duration::new(60, 0);
 
+#[repr(transparent)]
+struct ArcDvdbndMount<F: DvdbndFilesystem>(pub Arc<DvdbndMount<F>>);
+
 impl<F> DvdbndMount<F>
 where
     F: DvdbndFilesystem + Send + Sync + 'static,
@@ -37,18 +40,19 @@ where
         fs::create_dir_all(mountpoint)?;
 
         let mut config = Config::default();
-        config.mount_options = vec![MountOption::FSName("fsvfs".to_string()), MountOption::RO];
+        config.mount_options = vec![
+            MountOption::FSName("fsvfs".to_string()),
+            MountOption::RO,
+            MountOption::Async,
+        ];
 
         #[cfg(target_os = "linux")]
         {
             config.clone_fd = true;
-            config.n_threads = match std::thread::available_parallelism() {
-                Ok(threads) => Some(threads.get().min(16)),
-                Err(_) => None,
-            };
+            config.n_threads = Some(4);
         }
 
-        let mount = spawn_mount2(self, mountpoint, &config)?;
+        let mount = spawn_mount2(ArcDvdbndMount::new(self), mountpoint, &config)?;
 
         run_until_interrupted(mount)?;
 
@@ -85,12 +89,18 @@ where
     }
 }
 
-impl<F> fuser::Filesystem for DvdbndMount<F>
+impl<F: DvdbndFilesystem> ArcDvdbndMount<F> {
+    fn new(mount: DvdbndMount<F>) -> Self {
+        Self(Arc::new(mount))
+    }
+}
+
+impl<F> fuser::Filesystem for ArcDvdbndMount<F>
 where
     F: DvdbndFilesystem + Send + Sync + 'static,
 {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> io::Result<()> {
-        self.timestamp = SystemTime::now();
+        Arc::get_mut(&mut self.0).unwrap().timestamp = SystemTime::now();
 
         let _ = config.set_max_stack_depth(1);
 
@@ -141,7 +151,7 @@ where
     fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
         let fs = self.fs.as_rofs();
 
-        let Ok(Entry::Link(ino)) = fs.entry(ino.0, false) else {
+        let Ok(Entry::Link(ino)) = fs.entry(ino.0, true) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -155,29 +165,13 @@ where
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-        if flags.acc_mode() != OpenAccMode::O_RDONLY {
+        if flags.acc_mode() == OpenAccMode::O_RDONLY {
+            reply.opened(
+                FileHandle(ino.0),
+                FopenFlags::FOPEN_DIRECT_IO | FopenFlags::FOPEN_NOFLUSH, // | FopenFlags::FOPEN_KEEP_CACHE
+            );
+        } else {
             reply.error(Errno::EROFS);
-            return;
-        }
-
-        match self.open(ino.0) {
-            Ok(key) => {
-                let fh = FileHandle(key as u64);
-                reply.opened(
-                    fh,
-                    FopenFlags::FOPEN_DIRECT_IO
-                        | FopenFlags::FOPEN_NOFLUSH
-                        | FopenFlags::FOPEN_KEEP_CACHE,
-                );
-            }
-            Err(e) => {
-                match &e {
-                    MakeReaderError::Rofs(_) => reply.error(Errno::ENOENT),
-                    MakeReaderError::Decrypt(_) => reply.error(Errno::EBADF),
-                    MakeReaderError::TooManyReaders => reply.error(Errno::EMFILE),
-                }
-                warn!("could not open file: {e}");
-            }
         }
     }
 
@@ -187,7 +181,7 @@ where
             return;
         }
 
-        match self.fs.as_rofs().entry(ino.0, false) {
+        match self.fs.as_rofs().entry(ino.0, true) {
             Ok(Entry::Dir(_)) => reply.opened(
                 FileHandle(ino.0),
                 FopenFlags::FOPEN_NOFLUSH | FopenFlags::FOPEN_CACHE_DIR,
@@ -200,7 +194,7 @@ where
     fn read(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         offset: u64,
         size: u32,
@@ -208,18 +202,46 @@ where
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let Ok(key) = usize::try_from(fh.0) else {
-            reply.error(Errno::ESTALE);
-            return;
-        };
-
-        if let Some(reader) = self.readers.get(key)
-            && let reader = &*reader
+        if ino.0 == fh.0
+            && let Ok(Entry::File(file)) = self.fs.as_rofs().entry(ino.0, true)
         {
-            self.seek(reader, SeekFrom::Start(offset));
-            let data = self.read(reader, size);
+            let file_len = file.unpadded_len();
 
-            reply.data(data);
+            let offset = offset.min(file_len as u64) as u32;
+            let len = (file_len - offset).min(size);
+
+            let mount = self.0.clone();
+
+            let reply = Arc::new(reply);
+            let reply_if_err = Arc::downgrade(&reply);
+
+            let res = self.dispatcher.dispatch(async move || {
+                let mut data = Vec::with_capacity(len as usize);
+
+                let res = mount
+                    .read_file(ino.0, offset.into(), len, |buf, _| {
+                        Ok(data.extend_from_slice(buf))
+                    })
+                    .await;
+
+                let reply = Arc::into_inner(reply).expect("reply is uniquely owned");
+
+                match res {
+                    Ok(_) => reply.data(&data),
+                    Err(e) => {
+                        warn!("`DvdbndMount::read_file` error: {e}");
+                        reply.error(Errno::EIO);
+                    }
+                }
+            });
+
+            if let Err(not_dispatched) = res {
+                let reply = reply_if_err.upgrade();
+                drop(not_dispatched);
+
+                let reply = reply.and_then(Arc::into_inner).expect("reply was lost?");
+                reply.error(Errno::EIO);
+            }
         } else {
             reply.error(Errno::ESTALE);
         }
@@ -228,19 +250,16 @@ where
     fn release(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         _flags: OpenFlags,
         _lock_owner: Option<LockOwner>,
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        let Ok(key) = usize::try_from(fh.0) else {
-            reply.error(Errno::ESTALE);
-            return;
-        };
-
-        if self.readers.remove(key) {
+        if ino.0 == fh.0
+            && let Ok(Entry::File(_)) = self.fs.as_rofs().entry(ino.0, true)
+        {
             reply.ok();
         } else {
             reply.error(Errno::ESTALE);
@@ -256,7 +275,7 @@ where
         reply: ReplyEmpty,
     ) {
         if ino.0 == fh.0
-            && let Ok(Entry::Dir(_)) = self.fs.as_rofs().entry(ino.0, false)
+            && let Ok(Entry::Dir(_)) = self.fs.as_rofs().entry(ino.0, true)
         {
             reply.ok();
         } else {
@@ -376,10 +395,14 @@ where
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
-        let files = self.count_files() as u64;
+        let files = match self.fs.as_rofs().entries_iter(..) {
+            Ok(entries) => entries.len() as u64,
+            Err(_) => 0,
+        };
 
         let blocks = self
             .bdts
+            .inner
             .iter()
             .map(|bdt| u64::div_ceil(bdt.size as u64, BLOCK_SIZE as u64))
             .sum();
@@ -405,42 +428,6 @@ where
             reply.error(Errno::EACCES);
         }
     }
-
-    fn lseek(
-        &self,
-        _req: &Request,
-        _ino: INodeNo,
-        fh: FileHandle,
-        offset: i64,
-        whence: i32,
-        reply: ReplyLseek,
-    ) {
-        let pos = match whence {
-            SEEK_SET => SeekFrom::Start(offset as u64),
-            SEEK_END => SeekFrom::End(offset),
-            SEEK_CUR => SeekFrom::Current(offset),
-            _ => {
-                warn!("unsupported value of whence ({whence})");
-                reply.error(Errno::ENOSYS);
-                return;
-            }
-        };
-
-        let Ok(key) = usize::try_from(fh.0) else {
-            reply.error(Errno::ESTALE);
-            return;
-        };
-
-        if let Some(reader) = self.readers.get(key)
-            && let reader = &*reader
-        {
-            let offset = self.seek(reader, pos);
-
-            reply.offset(offset as i64);
-        } else {
-            reply.error(Errno::ESTALE);
-        }
-    }
 }
 
 fn file_type<T>(e: &Entry<'_, T>) -> FileType {
@@ -457,5 +444,13 @@ impl OnInterrupt for BackgroundSession {
     fn on_interrupt(self) -> Result<(), Self::Error> {
         self.umount_and_join()?;
         Ok(())
+    }
+}
+
+impl<F: DvdbndFilesystem> Deref for ArcDvdbndMount<F> {
+    type Target = Arc<DvdbndMount<F>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }

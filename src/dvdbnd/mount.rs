@@ -1,4 +1,6 @@
-use std::{cell::RefCell, ffi::OsStr, fs, io, path::Path, pin::pin, sync::Arc};
+use std::{
+    cell::RefCell, ffi::OsStr, fs, io, os::unix::fs::MetadataExt, path::Path, pin::pin, sync::Arc,
+};
 
 use color_eyre::eyre;
 use compio::{dispatcher::Dispatcher, fs::File};
@@ -41,7 +43,14 @@ pub struct DvdbndMount<F: DvdbndFilesystem> {
 
 #[derive(Debug)]
 struct BdtTls {
-    paths: Box<[Box<Path>]>,
+    inner: Box<[Bdt]>,
+}
+
+#[derive(Debug)]
+struct Bdt {
+    path: Box<Path>,
+    #[cfg_attr(windows, expect(unused))]
+    size: u64,
 }
 
 impl DvdbndMount<DvdbndRofs> {
@@ -112,7 +121,7 @@ where
             .proactor_builder(aligned::proactor_builder())
             .build()?;
 
-        let bdts = BdtTls::new(paths);
+        let bdts = BdtTls::new(paths)?;
 
         Ok(Self {
             fs,
@@ -128,7 +137,7 @@ where
         inode: u64,
         file_offset: u64,
         len: u32,
-        mut f: impl FnMut(&[u8], u32) -> eyre::Result<()> + Send + 'static,
+        mut f: impl FnMut(&[u8], u32) -> eyre::Result<()>,
     ) -> eyre::Result<()> {
         let fs = self.fs.as_rofs();
 
@@ -188,7 +197,7 @@ where
         file_len: u32,
         file_unpadded_len: u32,
         encryption_index: usize,
-        mut f: impl FnMut(&[u8], u32) -> eyre::Result<()> + Send + 'static,
+        mut f: impl FnMut(&[u8], u32) -> eyre::Result<()>,
     ) -> eyre::Result<()> {
         let start_offset = (file_start - data_start) as u32;
 
@@ -245,17 +254,17 @@ where
 }
 
 impl BdtTls {
-    fn new<P>(paths: P) -> Self
+    fn new<P>(paths: P) -> io::Result<Self>
     where
         P: IntoIterator<Item: AsRef<Path>>,
     {
-        let paths = paths
+        let bdts = paths
             .into_iter()
-            .map(|path| Box::from(path.as_ref()))
-            .collect::<Vec<_>>()
+            .map(Bdt::new)
+            .collect::<io::Result<Vec<_>>>()?
             .into_boxed_slice();
 
-        Self { paths }
+        Ok(Self { inner: bdts })
     }
 
     async fn open(&self, bdt_index: usize) -> io::Result<File> {
@@ -264,7 +273,7 @@ impl BdtTls {
                 const { RefCell::new(FxHashMap::with_hasher(FxBuildHasher::new())) };
         }
 
-        let path = &self.paths[bdt_index];
+        let path = &self.inner[bdt_index].path;
 
         if let Some(file) = MAP.with_borrow(|map| map.get(path).cloned()) {
             return Ok(file);
@@ -275,5 +284,15 @@ impl BdtTls {
             MAP.with_borrow_mut(|map| map.entry(path.clone()).insert_entry(new).get().clone());
 
         Ok(file)
+    }
+}
+
+impl Bdt {
+    fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let size = fs::metadata(&path)?.size();
+        Ok(Self {
+            path: Box::from(path.as_ref()),
+            size,
+        })
     }
 }
