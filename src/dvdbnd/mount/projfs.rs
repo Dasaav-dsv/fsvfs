@@ -18,6 +18,7 @@ use color_eyre::eyre::{self, eyre};
 use futures_util::{FutureExt, TryFutureExt};
 use fxhash::FxBuildHasher;
 use papaya::HashMap as PapayaMap;
+use tempfile::TempDir;
 use tracing::{info, warn};
 use windows::{
     Win32::{
@@ -566,13 +567,12 @@ impl<F: DvdbndFilesystem> OnInterrupt for Arc<MountContext<F>> {
 fn require_projfs() -> eyre::Result<()> {
     info!("ensuring ProjFS is enabled...");
 
-    let has_profjs_dll = unsafe { LoadLibraryW(w!("projectedfslib.dll")).is_ok() };
+    let Err(e) = try_load_projfs() else {
+        info!("loaded ProjFS library");
+        return Ok(());
+    };
 
-    if has_profjs_dll {
-        info!(
-            "loaded ProjFS DLL; if ProjFS is not actually enabled, see https://learn.microsoft.com/en-us/windows/win32/projfs/enabling-windows-projected-file-system"
-        );
-    }
+    warn!("the ProjFS library failed to initialize: {e}");
 
     let has_projfs = runas_powershell_command(
         "if ((Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State -eq 'disabled') { exit 1 }",
@@ -590,6 +590,22 @@ fn require_projfs() -> eyre::Result<()> {
                 "failed to enable ProjFS! See https://learn.microsoft.com/en-us/windows/win32/projfs/enabling-windows-projected-file-system"
             ));
         }
+    }
+
+    Ok(())
+}
+
+fn try_load_projfs() -> eyre::Result<()> {
+    unsafe {
+        LoadLibraryW(w!("projectedfslib.dll"))?;
+    }
+
+    let temp_dir = TempDir::new()?;
+    let temp_path = HSTRING::from(temp_dir.path());
+
+    unsafe {
+        let guid = GUID::new()?;
+        PrjMarkDirectoryAsPlaceholder(&temp_path, None, None, &guid)?;
     }
 
     Ok(())

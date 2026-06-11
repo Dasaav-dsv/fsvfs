@@ -49,6 +49,7 @@ libc = "0.2.186"
 
 [target.'cfg(windows)'.dependencies]
 papaya = "0.2.4"
+tempfile = { version = "3.27.0", default-features = false }
 windows = { version = "0.62.2", features = [
     "Win32_Storage_FileSystem",
     "Win32_Storage_ProjectedFileSystem",
