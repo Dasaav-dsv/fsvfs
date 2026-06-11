@@ -10,9 +10,10 @@ use std::{
 };
 
 use fxhash::FxHashMap;
+use rkyv::{Archive, Serialize};
 use thiserror::Error;
 
-use crate::filesystem::paths::{Paths, components::AsComponents};
+use crate::filesystem::{components::AsComponents, paths::Paths};
 
 #[derive(Debug, Error)]
 pub enum RofsError {
@@ -29,7 +30,7 @@ pub struct RofsBuilder<'a, 'b, T> {
     links: Vec<(&'a str, &'b str)>,
 }
 
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
+#[derive(Archive, Serialize)]
 pub struct Rofs<'a, T, C: Config = DefaultConfig> {
     nodes: Box<[Node]>,
     files: Box<[T]>,
@@ -80,8 +81,7 @@ pub trait ReadOnlyFilesystem {
         S: AsRef<str> + ?Sized + 'a;
 }
 
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
+#[derive(Clone, Copy, Debug, Archive, Serialize)]
 enum Node {
     Dir {
         child_index: NonZero<u32>,
@@ -90,8 +90,7 @@ enum Node {
     File(FileNode),
 }
 
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
+#[derive(Clone, Copy, Debug, Archive, Serialize)]
 struct FileNode {
     data_index: u32,
 }
@@ -311,7 +310,6 @@ impl<T, C: Config> Rofs<'_, T, C> {
     }
 }
 
-#[cfg(feature = "rkyv")]
 impl<T, C: Config> ArchivedRofs<'_, T, C>
 where
     T: rkyv::Archive,
@@ -390,7 +388,6 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     }
 }
 
-#[cfg(feature = "rkyv")]
 impl<T, C: Config> ReadOnlyFilesystem for ArchivedRofs<'_, T, C>
 where
     T: rkyv::Archive,
@@ -636,7 +633,6 @@ mod tests {
         &FS
     }
 
-    #[cfg(feature = "rkyv")]
     mod rkyv_tests {
         use rkyv::{rancor::Error, util::AlignedVec};
 

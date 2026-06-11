@@ -12,15 +12,6 @@ macro_rules! impl_uints {
         $vis_outer:vis $ty:ident($vis_inner:vis [u8; $b:literal]) as $as:ty;
     )+) => {
         $(
-            #[cfg_attr(
-                feature = "rkyv",
-                derive(
-                    rkyv::Archive,
-                    rkyv::Serialize,
-                    rkyv::Deserialize,
-                    rkyv::Portable,
-                )
-            )]
             #[derive(
                 Clone,
                 Copy,
@@ -35,6 +26,10 @@ macro_rules! impl_uints {
                 zerocopy::KnownLayout,
                 zerocopy::IntoBytes,
                 zerocopy::FromBytes,
+                rkyv::Archive,
+                rkyv::Serialize,
+                rkyv::Deserialize,
+                rkyv::Portable,
             )]
             #[repr(transparent)]
             $vis_outer struct $ty($vis_inner [u8; $b]);

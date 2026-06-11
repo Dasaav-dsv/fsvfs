@@ -8,7 +8,14 @@ use std::{
     slice,
 };
 
+use bytecheck::CheckBytes;
 use hashbrown::Equivalent;
+use rkyv::{
+    Portable, SerializeUnsized,
+    boxed::{ArchivedBox, BoxResolver},
+    rancor::Fallible,
+    with::{ArchiveWith, InlineAsBox, SerializeWith},
+};
 
 use crate::filesystem::readonly::{Config, DefaultConfig, Normalize};
 
@@ -25,6 +32,10 @@ pub struct ComponentsIter<'a, S, C> {
     start_pos: usize,
     _marker: PhantomData<C>,
 }
+
+#[derive(CheckBytes, Portable)]
+#[repr(transparent)]
+pub struct ArchivedBoxComponentStr<C>(ArchivedBox<str>, PhantomData<C>);
 
 pub trait AsComponents {
     type S: AsRef<str> + Sized;
@@ -328,6 +339,62 @@ where
     }
 }
 
+impl<C> ArchivedBoxComponentStr<C>
+where
+    C: Config,
+{
+    pub fn as_components(&self) -> &Components<ArchivedBox<str>, C> {
+        self.0.as_components()
+    }
+}
+
+impl<C> ArchiveWith<ComponentStr<'_, C>> for InlineAsBox {
+    type Archived = ArchivedBoxComponentStr<C>;
+    type Resolver = BoxResolver;
+
+    fn resolve_with(
+        field: &ComponentStr<'_, C>,
+        resolver: Self::Resolver,
+        out: rkyv::Place<Self::Archived>,
+    ) {
+        let out = unsafe { out.cast_unchecked::<ArchivedBox<str>>() };
+        ArchivedBox::resolve_from_ref(field.1, resolver, out);
+    }
+}
+
+impl<S, C> SerializeWith<ComponentStr<'_, C>, S> for InlineAsBox
+where
+    S: Fallible + ?Sized,
+    str: SerializeUnsized<S>,
+{
+    fn serialize_with(
+        field: &ComponentStr<'_, C>,
+        serializer: &mut S,
+    ) -> Result<Self::Resolver, S::Error> {
+        ArchivedBox::serialize_from_ref(field.1, serializer)
+    }
+}
+
+impl<C> PartialEq for ArchivedBoxComponentStr<C>
+where
+    C: Config,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.as_components() == other.as_components()
+    }
+}
+
+impl<C> Eq for ArchivedBoxComponentStr<C> where C: Config {}
+
+impl<C> Hash for ArchivedBoxComponentStr<C>
+where
+    C: Config,
+{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_components().hash(state);
+    }
+}
+
 // Taken from the Rust standard library `core::src::iter::traits::iter_compare`.
 #[inline]
 fn iter_compare<A, B, F, T>(a: A, b: B, f: F) -> ControlFlow<T, Ordering>
@@ -389,7 +456,7 @@ mod tests {
     use fxhash::FxBuildHasher;
 
     use crate::filesystem::{
-        paths::components::{self, AsComponents},
+        components::{self, AsComponents},
         readonly::{Config, Normalize},
     };
 

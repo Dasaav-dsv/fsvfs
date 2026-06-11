@@ -3,6 +3,7 @@ use aes::cipher::{
     array::{AsArrayMut, AsArrayRef},
 };
 use futures_util::TryFutureExt;
+use rkyv::{Archive, Portable, Serialize};
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
 
@@ -249,11 +250,18 @@ where
     Ok(index)
 }
 
-#[cfg_attr(
-    feature = "rkyv",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
+#[derive(
+    Clone,
+    Debug,
+    KnownLayout,
+    Immutable,
+    Unaligned,
+    IntoBytes,
+    TryFromBytes,
+    Archive,
+    Serialize,
+    Portable,
 )]
-#[derive(Clone, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, TryFromBytes)]
 #[repr(u8)]
 enum Header {
     Aes128EcbNone(Aes128),
@@ -265,22 +273,37 @@ enum AesError {
     Range,
 }
 
-#[cfg_attr(
-    feature = "rkyv",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
+#[derive(
+    Clone,
+    Debug,
+    KnownLayout,
+    Immutable,
+    Unaligned,
+    IntoBytes,
+    FromBytes,
+    Archive,
+    Serialize,
+    Portable,
 )]
-#[derive(Clone, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
 #[repr(C, align(1))]
 struct Aes128 {
     key: [u8; BLOCK_SIZE],
     range_count: U24,
 }
 
-#[cfg_attr(
-    feature = "rkyv",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    KnownLayout,
+    Immutable,
+    Unaligned,
+    IntoBytes,
+    FromBytes,
+    Archive,
+    Serialize,
+    Portable,
 )]
-#[derive(Clone, Copy, Debug, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
 #[repr(C, align(1))]
 struct Range {
     start_offset: U32,

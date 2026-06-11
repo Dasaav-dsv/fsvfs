@@ -3,6 +3,7 @@ use std::num::NonZero;
 use color_eyre::eyre;
 use fxhash::FxBuildHasher;
 use indexmap::IndexMap;
+use rkyv::{Archive, Serialize};
 
 use crate::{
     dvdbnd::{
@@ -37,8 +38,7 @@ pub trait DvdbndFile {
     fn encryption_index(&self) -> Option<usize>;
 }
 
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
-#[derive(Debug)]
+#[derive(Debug, Archive, Serialize)]
 pub struct DvdbndRofs {
     inner: Rofs<'static, File, DvdbndConfig>,
     encryption_store: Vec<u8>,
@@ -53,8 +53,7 @@ pub struct DvdbndRofsBuilder<'a, 'b, 'c> {
 #[derive(Debug)]
 struct DvdbndConfig;
 
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize))]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Archive, Serialize)]
 struct File {
     data_offset: u64,
     len: u32,
@@ -271,7 +270,6 @@ impl DvdbndFile for File {
     }
 }
 
-#[cfg(feature = "rkyv")]
 impl DvdbndFilesystem for ArchivedDvdbndRofs {
     #[inline]
     fn as_rofs(&self) -> &impl ReadOnlyFilesystem<File: DvdbndFile> {
@@ -284,7 +282,6 @@ impl DvdbndFilesystem for ArchivedDvdbndRofs {
     }
 }
 
-#[cfg(feature = "rkyv")]
 impl DvdbndFile for ArchivedFile {
     #[inline]
     fn src_index(&self) -> usize {

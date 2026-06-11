@@ -1,31 +1,54 @@
-use std::{fmt, marker::PhantomData, ptr::NonNull};
+use std::{fmt, hash::BuildHasherDefault, marker::PhantomData, ptr::NonNull};
+
+use hashbrown::HashMap;
+use rkyv::{
+    Archive, Serialize,
+    hash::FxHasher64,
+    with::{Identity, InlineAsBox, Map, MapKV, Skip},
+};
 
 use crate::filesystem::{
-    paths::components::{AsComponents, ComponentStr},
+    components::{AsComponents, ComponentStr},
     readonly::{Config, DefaultConfig, Normalize},
 };
 
-pub mod components;
+#[derive(Archive, Serialize)]
+pub struct Paths<'a, C = DefaultConfig> {
+    inner: RawPaths<'a>,
+    _marker: PhantomData<C>,
+}
 
-cfg_select! {
-    feature = "rkyv" => {
-        mod rkyv;
-        pub use rkyv::*;
+#[derive(Archive, Serialize)]
+struct RawPaths<'a> {
+    #[rkyv(with = Map<InlineAsBox>)]
+    paths_by_inode: Vec<&'a str>,
+
+    #[rkyv(with = MapKV<InlineAsBox, Identity>)]
+    inodes_by_path: HashMap<ComponentStr<'a, DefaultConfig>, u32, BuildHasherDefault<FxHasher64>>,
+
+    #[rkyv(with = Skip)]
+    str_store: Option<NonNull<str>>,
+}
+
+impl<C> ArchivedPaths<'_, C> {
+    pub fn path_by_inode(&self, inode: u32) -> Option<&str> {
+        let boxed = self.inner.paths_by_inode.get(inode as usize)?;
+        Some(&**boxed)
     }
-    _ => {
-        use fxhash::FxBuildHasher;
-        use hashbrown::HashMap;
 
-        pub struct Paths<'a, C = DefaultConfig> {
-            inner: RawPaths<'a>,
-            _marker: PhantomData<C>,
-        }
+    pub fn inode_by_path(&self, path: &(impl AsComponents + ?Sized)) -> Option<u32>
+    where
+        C: Config,
+    {
+        let inode = self
+            .inner
+            .inodes_by_path
+            .get_with(path.as_components::<C>(), |components, key| {
+                components == key.as_components()
+            })
+            .cloned()?;
 
-        struct RawPaths<'a> {
-            paths_by_inode: Vec<&'a str>,
-            inodes_by_path: HashMap<ComponentStr<'a, DefaultConfig>, u32, FxBuildHasher>,
-            str_store: Option<NonNull<str>>,
-        }
+        Some(inode.into())
     }
 }
 
