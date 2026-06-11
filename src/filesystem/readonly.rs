@@ -73,10 +73,6 @@ pub trait ReadOnlyFilesystem {
     where
         R: RangeBounds<u64>;
 
-    fn file_iter(&self) -> impl ExactSizeIterator<Item = &Self::File>;
-
-    fn file_index(&self, entry: &Entry<'_, Self::File>) -> Result<usize, RofsError>;
-
     fn path(&self, inode: u64) -> Result<&str, RofsError>;
 
     fn lookup<'a, S, const N: usize>(&self, path: impl Into<[&'a S; N]>) -> Result<u64, RofsError>
@@ -374,23 +370,6 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     }
 
     #[inline]
-    fn file_index(&self, entry: &Entry<'_, Self::File>) -> Result<usize, RofsError> {
-        match *entry {
-            Entry::File(data) => self.files.element_offset(data).ok_or(RofsError::NotFound),
-            Entry::Link(inode) => {
-                let entry = self.entry(inode, true)?;
-                self.file_index(&entry)
-            }
-            Entry::Dir(_) => Err(RofsError::IsDir),
-        }
-    }
-
-    #[inline]
-    fn file_iter(&self) -> impl ExactSizeIterator<Item = &Self::File> {
-        self.files.iter()
-    }
-
-    #[inline]
     fn path(&self, inode: u64) -> Result<&str, RofsError> {
         let inode = inode.wrapping_sub(C::INODE_ROOT);
         self.paths
@@ -436,23 +415,6 @@ where
         let range = map_range(range, C::INODE_ROOT);
         let nodes = (*self.nodes).get(range).ok_or(RofsError::NotFound)?;
         Ok(nodes.iter().map(|node| self.node_to_entry(node, false)))
-    }
-
-    #[inline]
-    fn file_index(&self, entry: &Entry<'_, Self::File>) -> Result<usize, RofsError> {
-        match *entry {
-            Entry::File(data) => self.files.element_offset(data).ok_or(RofsError::NotFound),
-            Entry::Link(inode) => {
-                let entry = self.entry(inode, true)?;
-                self.file_index(&entry)
-            }
-            Entry::Dir(_) => Err(RofsError::IsDir),
-        }
-    }
-
-    #[inline]
-    fn file_iter(&self) -> impl ExactSizeIterator<Item = &Self::File> {
-        self.files.iter()
     }
 
     #[inline]
