@@ -168,7 +168,7 @@ where
         if flags.acc_mode() == OpenAccMode::O_RDONLY {
             reply.opened(
                 FileHandle(ino.0),
-                FopenFlags::FOPEN_DIRECT_IO | FopenFlags::FOPEN_NOFLUSH, // | FopenFlags::FOPEN_KEEP_CACHE
+                FopenFlags::FOPEN_NOFLUSH | FopenFlags::FOPEN_KEEP_CACHE,
             );
         } else {
             reply.error(Errno::EROFS);
