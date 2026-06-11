@@ -1,6 +1,4 @@
-use std::{
-    cell::RefCell, ffi::OsStr, fs, io, os::unix::fs::MetadataExt, path::Path, pin::pin, sync::Arc,
-};
+use std::{cell::RefCell, ffi::OsStr, fs, io, path::Path, pin::pin, sync::Arc};
 
 use color_eyre::eyre;
 use compio::{dispatcher::Dispatcher, fs::File};
@@ -296,7 +294,7 @@ impl BdtTls {
 
 impl Bdt {
     fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let size = fs::metadata(&path)?.size();
+        let size = fs::metadata(&path)?.len();
         Ok(Self {
             path: Box::from(path.as_ref()),
             size,
