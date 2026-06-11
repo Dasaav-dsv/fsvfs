@@ -37,6 +37,7 @@ use windows::{
                 PrjWriteFileData, PrjWritePlaceholderInfo,
             },
         },
+        System::LibraryLoader::LoadLibraryW,
     },
     core::{Error as WindowsError, GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
 };
@@ -564,6 +565,14 @@ impl<F: DvdbndFilesystem> OnInterrupt for Arc<MountContext<F>> {
 
 fn require_projfs() -> eyre::Result<()> {
     info!("ensuring ProjFS is enabled...");
+
+    let has_profjs_dll = unsafe { LoadLibraryW(w!("projectedfslib.dll")).is_ok() };
+
+    if has_profjs_dll {
+        info!(
+            "loaded ProjFS DLL; if ProjFS is not actually enabled, see https://learn.microsoft.com/en-us/windows/win32/projfs/enabling-windows-projected-file-system"
+        );
+    }
 
     let has_projfs = runas_powershell_command(
         "if ((Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State -eq 'disabled') { exit 1 }",
