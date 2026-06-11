@@ -139,7 +139,7 @@ where
     ) -> eyre::Result<()> {
         let fs = self.fs.as_rofs();
 
-        let file = match fs.entry(inode, true) {
+        let file = match fs.entry(inode) {
             Ok(Entry::File(file)) => file,
             Ok(_) => return Err(RofsError::IsDir.into()),
             Err(e) => return Err(e.into()),

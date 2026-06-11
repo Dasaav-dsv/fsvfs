@@ -1,4 +1,4 @@
-use std::num::NonZero;
+use std::{borrow::Cow, num::NonZero};
 
 use color_eyre::eyre;
 use fxhash::FxBuildHasher;
@@ -85,7 +85,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
 
     pub fn finish(&mut self) -> eyre::Result<DvdbndRofs> {
         let mut encryption_store = vec![];
-        let mut files_by_bhd = vec![];
+        let mut files_by_path = vec![];
 
         for ((&bnd_name, bhd), i) in self.bhds.iter().zip(0..) {
             let files = match bhd {
@@ -93,36 +93,16 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
                 Bhd5FileAny::BE(bhd) => self.process_bhd(bhd, bnd_name, i, &mut encryption_store),
             };
 
-            files_by_bhd.push((bnd_name, files?));
+            files_by_path.push(files?);
         }
-
-        let hash_paths = files_by_bhd
-            .iter()
-            .flat_map(|(bnd, files)| {
-                files.iter().map(move |(hash, _, file)| {
-                    if *hash <= u32::MAX as u64 {
-                        (format!(".{bnd}/{:02x}/{hash:08x}", hash >> 24), file)
-                    } else {
-                        (format!(".{bnd}/{:02x}/{hash:16x}", hash >> 56), file)
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let link_paths = files_by_bhd
-            .iter()
-            .flat_map(|(_, files)| files.as_slice())
-            .zip(&hash_paths)
-            .filter_map(|((_, to, _), (from, _))| Some(from.as_str()).zip(*to))
-            .collect::<Vec<_>>();
 
         let inner = RofsBuilder::new()
             .with_files(
-                hash_paths
+                files_by_path
                     .iter()
-                    .map(|(path, file)| (path.as_str(), **file)),
+                    .flatten()
+                    .map(|(path, file)| (&**path, *file)),
             )
-            .with_links(link_paths)
             .finish();
 
         Ok(DvdbndRofs {
@@ -137,7 +117,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
         bnd_name: &str,
         src_index: u32,
         encryption_store: &mut Vec<u8>,
-    ) -> eyre::Result<Vec<(u64, Option<&'c str>, File)>> {
+    ) -> eyre::Result<Vec<(Cow<'c, str>, File)>> {
         let encryption = &bhd.encryption;
 
         let files = match &bhd.buckets {
@@ -165,7 +145,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
         src_index: u32,
         encryption: &[Option<&Encryption<O>>],
         encryption_store: &mut Vec<u8>,
-    ) -> eyre::Result<Vec<(u64, Option<&'c str>, File)>>
+    ) -> eyre::Result<Vec<(Cow<'c, str>, File)>>
     where
         O: ByteOrderExt,
         E: Bhd5Entry<O>,
@@ -202,10 +182,22 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
 
                 let hash = entry.path_hash();
 
-                let path = hashes.as_ref().and_then(|hashes| match hashes {
-                    Hashes::U32(hashes) => hashes.get(&(hash as u32)).cloned(),
-                    Hashes::U64(hashes) => hashes.get(&hash).cloned(),
-                });
+                let path = hashes
+                    .as_ref()
+                    .and_then(|hashes| match hashes {
+                        Hashes::U32(hashes) => hashes.get(&(hash as u32)).cloned(),
+                        Hashes::U64(hashes) => hashes.get(&hash).cloned(),
+                    })
+                    .map_or_else(
+                        || {
+                            if hash <= u32::MAX as u64 {
+                                Cow::Owned(format!(".{bnd_name}/{:02x}/{hash:08x}", hash >> 24))
+                            } else {
+                                Cow::Owned(format!(".{bnd_name}/{:02x}/{hash:16x}", hash >> 56))
+                            }
+                        },
+                        Cow::Borrowed,
+                    );
 
                 let file = File {
                     data_offset: entry.file_offset(),
@@ -215,7 +207,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
                     encryption_index,
                 };
 
-                Ok((hash, path, file))
+                Ok((path, file))
             })
             .collect()
     }

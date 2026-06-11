@@ -95,7 +95,6 @@ where
         let (is_dir, file_size) = match entry {
             Entry::Dir(_) => (true, 0),
             Entry::File(file) => (false, file.unpadded_len()),
-            Entry::Link(_) => (false, 0),
         };
 
         PRJ_FILE_BASIC_INFO {
@@ -173,7 +172,7 @@ where
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
-            let Ok(Entry::Dir(inode_range)) = fs.entry(inode, false) else {
+            let Ok(Entry::Dir(inode_range)) = fs.entry(inode) else {
                 return Err(ERROR_DIRECTORY.into());
             };
 
@@ -227,7 +226,7 @@ where
             let mut end_pos = start_pos;
 
             for (pos, (path, inode)) in dir.enumerate(searchexpression) {
-                let Ok(entry) = fs.entry(inode, true) else {
+                let Ok(entry) = fs.entry(inode) else {
                     return Err(E_FAIL.into());
                 };
 
@@ -264,7 +263,7 @@ where
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
-            let Ok(entry) = fs.entry(inode, true) else {
+            let Ok(entry) = fs.entry(inode) else {
                 return Err(E_FAIL.into());
             };
 

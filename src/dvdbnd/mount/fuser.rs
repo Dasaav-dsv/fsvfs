@@ -127,7 +127,7 @@ where
             return;
         };
 
-        let Ok(entry) = self.fs.as_rofs().entry(ino, true) else {
+        let Ok(entry) = self.fs.as_rofs().entry(ino) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -138,7 +138,7 @@ where
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-        let Ok(entry) = self.fs.as_rofs().entry(ino.0, true) else {
+        let Ok(entry) = self.fs.as_rofs().entry(ino.0) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -146,22 +146,6 @@ where
         let attr = self.file_attr(ino, &entry);
 
         reply.attr(&CACHE_TTL, &attr);
-    }
-
-    fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
-        let fs = self.fs.as_rofs();
-
-        let Ok(Entry::Link(ino)) = fs.entry(ino.0, true) else {
-            reply.error(Errno::ENOENT);
-            return;
-        };
-
-        let Ok(path) = fs.path(ino) else {
-            reply.error(Errno::EBADF);
-            return;
-        };
-
-        reply.data(path.as_bytes());
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
@@ -181,7 +165,7 @@ where
             return;
         }
 
-        match self.fs.as_rofs().entry(ino.0, true) {
+        match self.fs.as_rofs().entry(ino.0) {
             Ok(Entry::Dir(_)) => reply.opened(
                 FileHandle(ino.0),
                 FopenFlags::FOPEN_NOFLUSH | FopenFlags::FOPEN_CACHE_DIR,
@@ -203,7 +187,7 @@ where
         reply: ReplyData,
     ) {
         if ino.0 == fh.0
-            && let Ok(Entry::File(file)) = self.fs.as_rofs().entry(ino.0, true)
+            && let Ok(Entry::File(file)) = self.fs.as_rofs().entry(ino.0)
         {
             let file_len = file.unpadded_len();
 
@@ -258,7 +242,7 @@ where
         reply: ReplyEmpty,
     ) {
         if ino.0 == fh.0
-            && let Ok(Entry::File(_)) = self.fs.as_rofs().entry(ino.0, true)
+            && let Ok(Entry::File(_)) = self.fs.as_rofs().entry(ino.0)
         {
             reply.ok();
         } else {
@@ -275,7 +259,7 @@ where
         reply: ReplyEmpty,
     ) {
         if ino.0 == fh.0
-            && let Ok(Entry::Dir(_)) = self.fs.as_rofs().entry(ino.0, true)
+            && let Ok(Entry::Dir(_)) = self.fs.as_rofs().entry(ino.0)
         {
             reply.ok();
         } else {
@@ -304,7 +288,7 @@ where
     ) {
         let fs = self.fs.as_rofs();
 
-        let Ok(Entry::Dir(range)) = fs.entry(ino.0, true) else {
+        let Ok(Entry::Dir(range)) = fs.entry(ino.0) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -347,7 +331,7 @@ where
     ) {
         let fs = self.fs.as_rofs();
 
-        let Ok(Entry::Dir(range)) = fs.entry(ino.0, true) else {
+        let Ok(Entry::Dir(range)) = fs.entry(ino.0) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -434,7 +418,6 @@ fn file_type<T>(e: &Entry<'_, T>) -> FileType {
     match e {
         Entry::Dir(_) => FileType::Directory,
         Entry::File(_) => FileType::RegularFile,
-        Entry::Link(_) => FileType::Symlink,
     }
 }
 
