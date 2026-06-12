@@ -21,7 +21,7 @@ use crate::{
         },
         keys::Keys,
     },
-    filesystem::readonly::{Entry, ReadOnlyFilesystem, RofsError},
+    filesystem::{Entry, ReadOnlyFilesystem, RofsError},
     time::time,
 };
 

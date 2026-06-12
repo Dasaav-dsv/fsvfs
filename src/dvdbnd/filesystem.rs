@@ -14,7 +14,7 @@ use crate::{
         dict::Dictionary,
         filesystem::encryption::{EncryptionStore, store_encryption},
     },
-    filesystem::readonly::{Config, ReadOnlyFilesystem, Rofs, RofsBuilder},
+    filesystem::{Config, ReadOnlyFilesystem, Rofs, RofsBuilder},
 };
 
 pub mod aligned;

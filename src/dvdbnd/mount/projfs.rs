@@ -48,7 +48,7 @@ use crate::{
         filesystem::DvdbndFilesystem,
         mount::{DvdbndFile, DvdbndMount},
     },
-    filesystem::readonly::{Entry, ReadOnlyFilesystem, RofsError},
+    filesystem::{Entry, ReadOnlyFilesystem, RofsError},
     runas::runas_powershell_command,
     thread::{OnInterrupt, run_until_interrupted},
 };

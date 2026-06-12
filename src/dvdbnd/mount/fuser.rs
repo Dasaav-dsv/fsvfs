@@ -20,7 +20,7 @@ use crate::{
         filesystem::{DvdbndFile, DvdbndFilesystem},
         mount::DvdbndMount,
     },
-    filesystem::readonly::{Entry, ReadOnlyFilesystem},
+    filesystem::{Entry, ReadOnlyFilesystem},
     thread::{OnInterrupt, run_until_interrupted},
 };
 
