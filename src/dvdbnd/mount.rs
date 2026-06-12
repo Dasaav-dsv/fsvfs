@@ -47,7 +47,7 @@ struct BdtTls {
 #[derive(Debug)]
 struct Bdt {
     path: Box<Path>,
-    #[cfg_attr(windows, expect(unused))]
+    #[cfg_attr(any(windows, not(test)), expect(unused))]
     size: u64,
 }
 
