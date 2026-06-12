@@ -14,7 +14,7 @@ use crate::{
         dict::Dictionary,
         filesystem::encryption::{EncryptionStore, store_encryption},
     },
-    filesystem::readonly::{Config, Normalize, ReadOnlyFilesystem, Rofs, RofsBuilder},
+    filesystem::readonly::{Config, ReadOnlyFilesystem, Rofs, RofsBuilder},
 };
 
 pub mod aligned;
@@ -40,7 +40,7 @@ pub trait DvdbndFile {
 
 #[derive(Debug, Archive, Serialize)]
 pub struct DvdbndRofs {
-    inner: Rofs<'static, File, DvdbndConfig>,
+    inner: Rofs<File, DvdbndConfig>,
     encryption_store: Vec<u8>,
 }
 
@@ -308,5 +308,4 @@ impl DvdbndFile for ArchivedFile {
 
 impl Config for DvdbndConfig {
     const SEPARATORS: &[char] = &['/', '\\'];
-    const NORMALIZATION: Normalize = Normalize::AsciiCase;
 }

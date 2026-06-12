@@ -3,6 +3,7 @@ use std::{
     collections::VecDeque,
     fmt,
     hint::cold_path,
+    iter::Peekable,
     marker::PhantomData,
     mem,
     num::NonZero,
@@ -13,7 +14,7 @@ use fxhash::FxHashMap;
 use rkyv::{Archive, Serialize};
 use thiserror::Error;
 
-use crate::filesystem::{components::AsComponents, paths::Paths};
+use crate::cow::CowExt;
 
 #[derive(Debug, Error)]
 pub enum RofsError {
@@ -30,10 +31,10 @@ pub struct RofsBuilder<'a, T> {
 }
 
 #[derive(Archive, Serialize)]
-pub struct Rofs<'a, T, C: Config = DefaultConfig> {
+pub struct Rofs<T, C: Config = DefaultConfig> {
     nodes: Box<[Node]>,
     files: Box<[T]>,
-    paths: Paths<'a, C>,
+    names: Box<[u8]>,
     _config: PhantomData<C>,
 }
 
@@ -46,16 +47,9 @@ pub enum Entry<'a, T> {
 #[derive(Clone, Copy, Debug)]
 pub struct DefaultConfig;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Normalize {
-    None,
-    AsciiCase,
-}
-
 pub trait Config {
     const INODE_ROOT: u64 = 1;
     const SEPARATORS: &[char] = &['/'];
-    const NORMALIZATION: Normalize = Normalize::None;
 }
 
 impl Config for DefaultConfig {}
@@ -63,34 +57,36 @@ impl Config for DefaultConfig {}
 pub trait ReadOnlyFilesystem {
     type File;
 
+    fn name(&self, inode: u64) -> Result<&str, RofsError>;
+
     fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError>;
 
-    fn entries_iter<R>(
+    fn lookup(&self, path: &str) -> Result<u64, RofsError>;
+
+    #[cfg_attr(windows, expect(unused))]
+    fn entry_iter<R>(
         &self,
         range: R,
     ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
     where
         R: RangeBounds<u64>;
-
-    fn path(&self, inode: u64) -> Result<&str, RofsError>;
-
-    fn lookup<'a, S, const N: usize>(&self, path: impl Into<[&'a S; N]>) -> Result<u64, RofsError>
-    where
-        S: AsRef<str> + ?Sized + 'a;
 }
 
 #[derive(Clone, Copy, Debug, Archive, Serialize)]
-enum Node {
+struct Node {
+    content: NodeContent,
+    name_index: u64,
+}
+
+#[derive(Clone, Copy, Debug, Archive, Serialize)]
+enum NodeContent {
     Dir {
         child_index: NonZero<u32>,
         child_count: u32,
     },
-    File(FileNode),
-}
-
-#[derive(Clone, Copy, Debug, Archive, Serialize)]
-struct FileNode {
-    data_index: u32,
+    File {
+        data_index: u32,
+    },
 }
 
 impl<'a, T> RofsBuilder<'a, T> {
@@ -106,45 +102,51 @@ impl<'a, T> RofsBuilder<'a, T> {
         self
     }
 
-    pub fn finish<C: Config>(&mut self) -> Rofs<'static, T, C> {
+    pub fn finish<C: Config>(&mut self) -> Rofs<T, C> {
         let Self { files } = mem::take(self);
         Rofs::new(files)
     }
 }
 
-impl<T, C: Config> Rofs<'_, T, C> {
-    fn new(files: Vec<(&str, T)>) -> Rofs<'static, T, C> {
-        let _ = Self::inode_from(files.len());
+impl<T, C: Config> Rofs<T, C> {
+    fn new(files: Vec<(&str, T)>) -> Rofs<T, C> {
+        assert_u32(files.len());
 
-        let (mut file_paths, files): (Vec<_>, Vec<_>) = files
+        let (file_paths, files): (Vec<_>, Vec<_>) = files
             .into_iter()
             .zip(0..)
             .map(|((path, file), data_index)| {
-                let path = normalize_path::<C>(path);
-                let file_index = FileNode { data_index };
-                ((path, file_index), file)
+                let mut path = normalize_path::<C>(path);
+                Cow::to_ascii_lowercase(&mut path);
+                ((path, data_index), file)
             })
             .unzip();
-
-        file_paths
-            .sort_unstable_by(|(a, _), (b, _)| a.as_components::<C>().cmp(b.as_components::<C>()));
-        file_paths.dedup_by(|(a, _), (b, _)| a.as_components::<C>() == b.as_components::<C>());
 
         let files = files.into_boxed_slice();
 
         enum TreeNode<'a> {
             Branch(FxHashMap<&'a str, TreeNode<'a>>),
-            Leaf(FileNode),
+            Leaf(u32),
         }
 
         let mut root = FxHashMap::default();
-        let mut total = 1u64;
+
+        let mut total = 1usize;
+        let mut total_len = 0usize;
 
         for (file_path, file_node) in &file_paths {
             let mut node = &mut root;
-            let mut components = file_path.as_components::<C>().iter().peekable();
+
+            let mut components = components::<C>(file_path);
 
             while let Some(component) = components.next() {
+                assert!(
+                    component.len() < u8::MAX as usize,
+                    "file names must be shorter than 255 bytes ({component})",
+                );
+
+                total_len += component.len() + 1;
+
                 let next = node.entry(component).or_insert_with(|| {
                     total += 1;
 
@@ -161,83 +163,70 @@ impl<T, C: Config> Rofs<'_, T, C> {
             }
         }
 
+        assert_u32(total);
+
         let root = FxHashMap::from_iter([(".", TreeNode::Branch(root))]);
 
-        let total = Self::inode_from(total);
+        let mut nodes = Vec::<Node>::with_capacity(total);
 
-        let mut nodes = Vec::<Node>::with_capacity(total as usize);
-        let mut paths = Vec::<(u32, Box<[&str]>)>::with_capacity(total as usize);
+        let mut names = Vec::with_capacity(total_len);
+        let mut names_interned = FxHashMap::with_capacity_and_hasher(total, Default::default());
 
-        let mut inode = 0;
+        let mut queue = VecDeque::from([&root]);
         let mut child_index = NonZero::<u32>::MIN;
 
-        let mut queue = VecDeque::from([(1, &root)]);
+        while let Some(branch) = queue.pop_front() {
+            let first = nodes.len();
 
-        while let Some((parent_index, branch)) = queue.pop_front() {
-            for (component, node) in branch {
+            for (&component, node) in branch {
+                let name_index = *names_interned.entry(component).or_insert_with(|| {
+                    let index = names.len();
+                    names.push(component.len() as u8);
+                    names.extend_from_slice(component.as_bytes());
+                    index
+                });
+
                 match node {
                     TreeNode::Branch(branch) => {
                         let child_count = branch.len() as u32;
 
-                        nodes.push(Node::Dir {
-                            child_index,
-                            child_count,
-                        });
-
+                        nodes.push(Node::new_dir(child_index, child_count, name_index));
                         child_index = child_index.checked_add(child_count).unwrap();
 
-                        let path = match paths.get(parent_index).map(|(_, parent)| &**parent) {
-                            None => vec!["."],
-                            Some(&["."]) => vec![*component],
-                            Some(parent) => parent.iter().cloned().chain([*component]).collect(),
-                        };
-                        let parent_index = paths.len();
-
-                        queue.push_back((parent_index, branch));
-
-                        paths.push((inode, path.into_boxed_slice()));
-                        inode += 1;
+                        queue.push_back(branch);
                     }
-                    TreeNode::Leaf(file_node) => {
-                        nodes.push(Node::File(*file_node));
-
-                        let path = match &*paths[parent_index].1 {
-                            &["."] => vec![*component],
-                            parent => parent.iter().cloned().chain([*component]).collect(),
-                        };
-
-                        paths.push((inode, path.into_boxed_slice()));
-                        inode += 1;
+                    TreeNode::Leaf(data_index) => {
+                        nodes.push(Node::new_file(*data_index, name_index));
                     }
                 }
             }
-        }
 
-        let paths = paths.iter().map(|(i, p)| (*i, &**p)).collect::<Paths<C>>();
+            // TODO: try Eytzinger layout.
+            // TODO: try packing short (10 or fewer ASCII chars) names as an alternative
+            // `name_index` repr, 6 bits per (Windows path valid) char.
+            // They should be quick to convert (use a LUT) and compare (store in BE order,
+            // reserve one bit to mark continuation for longer strings).
+            //
+            // SAFETY: indices and lengths are valid for length-prefixed strings.
+            nodes[first..].sort_unstable_by_key(|node| unsafe {
+                let name = names.get_unchecked(node.name_index()..);
+                let (len, rest) = name.split_first().unwrap_unchecked();
+                rest.get_unchecked(..*len as usize)
+            });
+        }
 
         Rofs {
             nodes: nodes.into_boxed_slice(),
+            names: names.into_boxed_slice(),
             files,
-            paths,
             _config: PhantomData,
         }
     }
 
-    #[track_caller]
-    fn inode_from<N>(n: N) -> u32
-    where
-        N: TryInto<u32> + fmt::Display + Copy,
-    {
-        if let Ok(n) = n.try_into() {
-            return n;
-        }
-
-        panic!("inode conversion failed: input ({n}) does not fit in a u32!");
-    }
-
+    #[inline]
     fn node_to_entry(&self, node: &Node) -> Entry<'_, T> {
-        match *node {
-            Node::Dir {
+        match node.content {
+            NodeContent::Dir {
                 child_index,
                 child_count,
             } => {
@@ -245,21 +234,116 @@ impl<T, C: Config> Rofs<'_, T, C> {
                 let end = start.wrapping_add(child_count as u64);
                 Entry::Dir(start..end)
             }
-            Node::File(FileNode { data_index }) => {
+            NodeContent::File { data_index } => {
                 let data_index = data_index as usize;
                 Entry::File(&self.files[data_index])
             }
         }
     }
+
+    #[inline]
+    fn inode_by_path_ignore_ascii_case(&self, mut path: Cow<'_, str>) -> Option<u32> {
+        match self.inode_by_path(&path) {
+            Some(inode) => Some(inode),
+            None => Cow::to_ascii_lowercase(&mut path).then(|| self.inode_by_path(&path))?,
+        }
+    }
+
+    #[inline]
+    fn inode_by_path(&self, path: &str) -> Option<u32> {
+        let mut components = components::<C>(path);
+
+        if components.peek().is_none() {
+            return Some(0);
+        }
+
+        let mut index = 0usize;
+
+        loop {
+            let component = components.next()?;
+
+            let &Node {
+                content:
+                    NodeContent::Dir {
+                        child_index,
+                        child_count,
+                    },
+                ..
+            } = self.nodes.get(index)?
+            else {
+                break None;
+            };
+
+            let start = child_index.get() as usize;
+            let end = start + child_count as usize;
+
+            // SAFETY: same as in `Rofs::new`.
+            // Note this wouldn't be safe in the archived version.
+            index = start
+                + self.nodes[start..end]
+                    .binary_search_by_key(&component.as_bytes(), |node| unsafe {
+                        let name = self.names.get_unchecked(node.name_index()..);
+                        let (len, rest) = name.split_first().unwrap_unchecked();
+                        rest.get_unchecked(..*len as usize)
+                    })
+                    .ok()?;
+
+            if components.peek().is_none() {
+                break Some(index as u32);
+            }
+        }
+    }
 }
 
-impl<T, C: Config> ArchivedRofs<'_, T, C>
+#[track_caller]
+fn assert_u32<N>(n: N) -> u32
+where
+    N: TryInto<u32> + fmt::Display + Copy,
+{
+    if let Ok(n) = n.try_into() {
+        return n;
+    }
+
+    panic!("conversion failed: input ({n}) does not fit in a u32!");
+}
+
+impl Node {
+    fn new_dir(child_index: NonZero<u32>, child_count: u32, name_index: usize) -> Self {
+        Self {
+            content: NodeContent::Dir {
+                child_index,
+                child_count,
+            },
+            name_index: name_index as u64,
+        }
+    }
+
+    fn new_file(data_index: u32, name_index: usize) -> Self {
+        Self {
+            content: NodeContent::File { data_index },
+            name_index: name_index as u64,
+        }
+    }
+
+    fn name_index(&self) -> usize {
+        self.name_index as usize
+    }
+}
+
+fn components<C: Config>(path: &str) -> Peekable<impl Iterator<Item = &str>> {
+    path.split(C::SEPARATORS)
+        .filter(|c| !matches!(*c, "" | "."))
+        .peekable()
+}
+
+impl<T, C: Config> ArchivedRofs<T, C>
 where
     T: rkyv::Archive,
 {
+    #[inline]
     fn node_to_entry(&self, node: &ArchivedNode) -> Entry<'_, T::Archived> {
-        match *node {
-            ArchivedNode::Dir {
+        match node.content {
+            ArchivedNodeContent::Dir {
                 child_index,
                 child_count,
             } => {
@@ -267,16 +351,84 @@ where
                 let end = start.wrapping_add(child_count.to_native() as u64);
                 Entry::Dir(start..end)
             }
-            ArchivedNode::File(ArchivedFileNode { data_index }) => {
+            ArchivedNodeContent::File { data_index } => {
                 let data_index = data_index.to_native() as usize;
                 Entry::File(&self.files[data_index])
             }
         }
     }
+
+    #[inline]
+    fn inode_by_path_ignore_ascii_case(&self, mut path: Cow<'_, str>) -> Option<u32> {
+        match self.inode_by_path(&path) {
+            Some(inode) => Some(inode),
+            None => Cow::to_ascii_lowercase(&mut path).then(|| self.inode_by_path(&path))?,
+        }
+    }
+
+    #[inline]
+    fn inode_by_path(&self, path: &str) -> Option<u32> {
+        let mut components = components::<C>(path);
+
+        if components.peek().is_none() {
+            return Some(0);
+        }
+
+        let mut index = 0usize;
+
+        loop {
+            let component = components.next()?;
+
+            let &ArchivedNode {
+                content:
+                    ArchivedNodeContent::Dir {
+                        child_index,
+                        child_count,
+                    },
+                ..
+            } = (*self.nodes).get(index)?
+            else {
+                break None;
+            };
+
+            let start = child_index.get() as usize;
+            let end = start + child_count.to_native() as usize;
+
+            index = start
+                + self.nodes[start..end]
+                    .binary_search_by_key(&component.as_bytes(), |node| {
+                        let name_index = node.name_index.to_native() as usize;
+                        let name = &self.names[name_index..];
+                        let (len, rest) = name.split_first().unwrap();
+                        &rest[..*len as usize]
+                    })
+                    .ok()?;
+
+            if components.peek().is_none() {
+                break Some(index as u32);
+            }
+        }
+    }
 }
 
-impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
+impl<T, C: Config> ReadOnlyFilesystem for Rofs<T, C> {
     type File = T;
+
+    #[inline]
+    fn name(&self, inode: u64) -> Result<&str, RofsError> {
+        let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
+        let node = self.nodes.get(index).ok_or(RofsError::NotFound)?;
+
+        // SAFETY: same as in `Rofs::new`.
+        // Note this wouldn't be safe in the archived version.
+        unsafe {
+            let name = self.names.get_unchecked(node.name_index()..);
+            let (len, rest) = name.split_first().unwrap_unchecked();
+            let bytes = rest.get_unchecked(..*len as usize);
+
+            Ok(str::from_utf8_unchecked(bytes))
+        }
+    }
 
     #[inline]
     fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError> {
@@ -286,7 +438,16 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
     }
 
     #[inline]
-    fn entries_iter<R>(
+    fn lookup(&self, path: &str) -> Result<u64, RofsError> {
+        let path = normalize_path::<C>(path);
+        match self.inode_by_path_ignore_ascii_case(path) {
+            Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
+            None => Err(RofsError::NotFound),
+        }
+    }
+
+    #[inline]
+    fn entry_iter<R>(
         &self,
         range: R,
     ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
@@ -297,33 +458,26 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<'_, T, C> {
         let nodes = self.nodes.get(range).ok_or(RofsError::NotFound)?;
         Ok(nodes.iter().map(|node| self.node_to_entry(node)))
     }
-
-    #[inline]
-    fn path(&self, inode: u64) -> Result<&str, RofsError> {
-        let inode = inode.wrapping_sub(C::INODE_ROOT);
-        self.paths
-            .path_by_inode(inode as u32)
-            .ok_or(RofsError::NotFound)
-    }
-
-    #[inline]
-    fn lookup<'a, S, const N: usize>(&self, path: impl Into<[&'a S; N]>) -> Result<u64, RofsError>
-    where
-        S: AsRef<str> + ?Sized + 'a,
-    {
-        let path = normallize_components::<_, C, _>(path.into());
-        match self.paths.inode_by_path(path.as_slice()) {
-            Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
-            None => Err(RofsError::NotFound),
-        }
-    }
 }
 
-impl<T, C: Config> ReadOnlyFilesystem for ArchivedRofs<'_, T, C>
+impl<T, C: Config> ReadOnlyFilesystem for ArchivedRofs<T, C>
 where
     T: rkyv::Archive,
 {
     type File = T::Archived;
+
+    #[inline]
+    fn name(&self, inode: u64) -> Result<&str, RofsError> {
+        let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
+        let node = (*self.nodes).get(index).ok_or(RofsError::NotFound)?;
+        let name_index = node.name_index.to_native() as usize;
+
+        let name = &self.names[name_index..];
+        let (len, rest) = name.split_first().unwrap();
+        let bytes = &rest[..*len as usize];
+
+        Ok(str::from_utf8(bytes).unwrap())
+    }
 
     #[inline]
     fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError> {
@@ -333,7 +487,16 @@ where
     }
 
     #[inline]
-    fn entries_iter<R>(
+    fn lookup(&self, path: &str) -> Result<u64, RofsError> {
+        let path = normalize_path::<C>(path);
+        match self.inode_by_path_ignore_ascii_case(path) {
+            Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
+            None => Err(RofsError::NotFound),
+        }
+    }
+
+    #[inline]
+    fn entry_iter<R>(
         &self,
         range: R,
     ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
@@ -343,26 +506,6 @@ where
         let range = map_range(range, C::INODE_ROOT);
         let nodes = (*self.nodes).get(range).ok_or(RofsError::NotFound)?;
         Ok(nodes.iter().map(|node| self.node_to_entry(node)))
-    }
-
-    #[inline]
-    fn path(&self, inode: u64) -> Result<&str, RofsError> {
-        let inode = inode.wrapping_sub(C::INODE_ROOT);
-        self.paths
-            .path_by_inode(inode as u32)
-            .ok_or(RofsError::NotFound)
-    }
-
-    #[inline]
-    fn lookup<'a, S, const N: usize>(&self, path: impl Into<[&'a S; N]>) -> Result<u64, RofsError>
-    where
-        S: AsRef<str> + ?Sized + 'a,
-    {
-        let path = normallize_components::<_, C, _>(path.into());
-        match self.paths.inode_by_path(path.as_slice()) {
-            Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
-            None => Err(RofsError::NotFound),
-        }
     }
 }
 
@@ -395,15 +538,6 @@ fn normalize_path<C: Config>(path: &str) -> Cow<'_, str> {
     }
 }
 
-#[inline(always)]
-fn normallize_components<S, C, const N: usize>(path: [&S; N]) -> [Cow<'_, str>; N]
-where
-    S: AsRef<str> + ?Sized,
-    C: Config,
-{
-    path.map(|sub| normalize_path::<C>(sub.as_ref()))
-}
-
 #[track_caller]
 fn map_range<R>(range: R, root: u64) -> (Bound<usize>, Bound<usize>)
 where
@@ -426,12 +560,12 @@ impl<T> Default for RofsBuilder<'_, T> {
     }
 }
 
-impl<T: fmt::Debug, C: Config> fmt::Debug for Rofs<'_, T, C> {
+impl<T: fmt::Debug, C: Config> fmt::Debug for Rofs<T, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Rofs")
             .field("nodes", &self.nodes)
             .field("files", &self.files)
-            .field("paths", &self.paths)
+            .field("paths", &self.names)
             .finish()
     }
 }
@@ -441,7 +575,7 @@ mod tests {
     use std::{fmt, fs, sync::LazyLock};
 
     use crate::{
-        filesystem::readonly::{Config, Entry, Normalize, ReadOnlyFilesystem, Rofs, RofsBuilder},
+        filesystem::readonly::{Config, Entry, ReadOnlyFilesystem, Rofs, RofsBuilder},
         hash::hash_path32,
     };
 
@@ -469,32 +603,32 @@ mod tests {
         get_data_in_fs(bnd_fs(), &PATHS);
     }
 
-    #[track_caller]
     fn lookup_in_fs<F: ReadOnlyFilesystem>(f: &F, paths: &[&str])
     where
         F: ReadOnlyFilesystem,
     {
-        assert_eq!(f.lookup((".",)).unwrap(), 1);
-        assert_eq!(f.path(1).unwrap(), ".");
+        assert_eq!(f.lookup(".").unwrap(), 1);
+        assert_eq!(f.name(1).unwrap(), ".");
 
         for &path in paths {
-            let inode = f.lookup((path,)).unwrap();
+            let inode = f.lookup(path).unwrap();
 
-            let path2 = f.path(inode).unwrap();
-            assert!(path.eq_ignore_ascii_case(path2));
+            let name = match path.rsplit_once('/') {
+                Some((_, name)) => name,
+                None => path,
+            };
 
-            let inode2 = f.lookup((path2,)).unwrap();
-            assert_eq!(inode, inode2);
+            let name2 = f.name(inode).unwrap();
+            assert!(name.eq_ignore_ascii_case(name2), "{name} != {name2}");
         }
     }
 
-    #[track_caller]
     fn get_data_in_fs<F: ReadOnlyFilesystem>(f: &F, paths: &[&str])
     where
         F::File: PartialEq<u32> + fmt::Debug + Copy,
     {
         for &path in paths {
-            let inode = f.lookup((path,)).unwrap();
+            let inode = f.lookup(path).unwrap();
             let Entry::File(&hash) = f.entry(inode).unwrap() else {
                 panic!("not a file");
             };
@@ -508,13 +642,12 @@ mod tests {
     struct BndConfig;
     impl Config for BndConfig {
         const SEPARATORS: &[char] = &['/', '\\'];
-        const NORMALIZATION: Normalize = Normalize::AsciiCase;
     }
 
-    type BndFs<'a> = Rofs<'a, u32, BndConfig>;
+    type BndFs = Rofs<u32, BndConfig>;
 
     #[track_caller]
-    fn bnd_fs() -> &'static BndFs<'static> {
+    fn bnd_fs() -> &'static BndFs {
         static FS: LazyLock<BndFs> =
             LazyLock::new(|| {
                 let files = [
@@ -555,16 +688,16 @@ mod tests {
             get_data_in_fs(archived_bnd_fs(), &PATHS);
         }
 
-        type ArchivedBndFs<'a> = ArchivedRofs<'a, u32, BndConfig>;
+        type ArchivedBndFs = ArchivedRofs<u32, BndConfig>;
 
         #[track_caller]
-        fn archived_bnd_fs() -> &'static ArchivedBndFs<'static> {
+        fn archived_bnd_fs() -> &'static ArchivedBndFs {
             static FS_BYTES: LazyLock<AlignedVec> = LazyLock::new(|| {
                 let fs = bnd_fs();
                 rkyv::to_bytes::<Error>(fs).unwrap()
             });
 
-            static ARHIVED_FS: LazyLock<&'static ArchivedBndFs<'static>> =
+            static ARHIVED_FS: LazyLock<&'static ArchivedBndFs> =
                 LazyLock::new(|| rkyv::access::<_, Error>(&FS_BYTES).unwrap());
 
             &ARHIVED_FS

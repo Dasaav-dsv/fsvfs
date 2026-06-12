@@ -168,7 +168,7 @@ where
             let fs = context.mount.fs.as_rofs();
             let path = unsafe { callbackdata.FilePathName.to_string()? };
 
-            let Ok(inode) = fs.lookup([path.as_str()]) else {
+            let Ok(inode) = fs.lookup(&path) else {
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
@@ -259,7 +259,7 @@ where
             let fs = context.mount.fs.as_rofs();
             let path = unsafe { callbackdata.FilePathName.to_string()? };
 
-            let Ok(inode) = fs.lookup([path.as_str()]) else {
+            let Ok(inode) = fs.lookup(&path) else {
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
@@ -291,7 +291,7 @@ where
         Self::call(callbackdata, |context| {
             let path = unsafe { callbackdata.FilePathName.to_string()? };
 
-            let Ok(inode) = context.mount.fs.as_rofs().lookup([path.as_str()]) else {
+            let Ok(inode) = context.mount.fs.as_rofs().lookup(&path) else {
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
@@ -470,13 +470,7 @@ impl DirEnumeration {
         let mut store = Vec::with_capacity(len * 32);
 
         for inode in inodes {
-            let path = fs.path(inode)?;
-
-            let name = match path.rsplit_once('/') {
-                Some((_, name)) => name,
-                None => path,
-            };
-
+            let name = fs.name(inode)?;
             index.push((store.len(), inode));
             store.extend(name.encode_utf16().chain([0]));
         }
