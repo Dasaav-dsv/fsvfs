@@ -61,7 +61,11 @@ pub trait ReadOnlyFilesystem {
 
     fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError>;
 
+    #[cfg_attr(all(unix, not(test)), expect(unused))]
     fn lookup(&self, path: &str) -> Result<u64, RofsError>;
+
+    #[cfg_attr(windows, expect(unused))]
+    fn lookup_in_dir(&self, parent_inode: u64, path: &str) -> Result<u64, RofsError>;
 
     #[cfg_attr(windows, expect(unused))]
     fn entry_iter<R>(
@@ -242,22 +246,24 @@ impl<T, C: Config> Rofs<T, C> {
     }
 
     #[inline]
-    fn inode_by_path_ignore_ascii_case(&self, mut path: Cow<'_, str>) -> Option<u32> {
-        match self.inode_by_path(&path) {
+    fn inode_by_path_ignore_ascii_case(&self, parent: u32, mut path: Cow<'_, str>) -> Option<u32> {
+        match self.inode_by_path(parent, &path) {
             Some(inode) => Some(inode),
-            None => Cow::to_ascii_lowercase(&mut path).then(|| self.inode_by_path(&path))?,
+            None => {
+                Cow::to_ascii_lowercase(&mut path).then(|| self.inode_by_path(parent, &path))?
+            }
         }
     }
 
     #[inline]
-    fn inode_by_path(&self, path: &str) -> Option<u32> {
+    fn inode_by_path(&self, parent: u32, path: &str) -> Option<u32> {
         let mut components = components::<C>(path);
 
         if components.peek().is_none() {
-            return Some(0);
+            return Some(parent);
         }
 
-        let mut index = 0usize;
+        let mut index = parent as usize;
 
         loop {
             let component = components.next()?;
@@ -359,22 +365,24 @@ where
     }
 
     #[inline]
-    fn inode_by_path_ignore_ascii_case(&self, mut path: Cow<'_, str>) -> Option<u32> {
-        match self.inode_by_path(&path) {
+    fn inode_by_path_ignore_ascii_case(&self, parent: u32, mut path: Cow<'_, str>) -> Option<u32> {
+        match self.inode_by_path(parent, &path) {
             Some(inode) => Some(inode),
-            None => Cow::to_ascii_lowercase(&mut path).then(|| self.inode_by_path(&path))?,
+            None => {
+                Cow::to_ascii_lowercase(&mut path).then(|| self.inode_by_path(parent, &path))?
+            }
         }
     }
 
     #[inline]
-    fn inode_by_path(&self, path: &str) -> Option<u32> {
+    fn inode_by_path(&self, parent: u32, path: &str) -> Option<u32> {
         let mut components = components::<C>(path);
 
         if components.peek().is_none() {
-            return Some(0);
+            return Some(parent);
         }
 
-        let mut index = 0usize;
+        let mut index = parent as usize;
 
         loop {
             let component = components.next()?;
@@ -439,8 +447,15 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<T, C> {
 
     #[inline]
     fn lookup(&self, path: &str) -> Result<u64, RofsError> {
+        self.lookup_in_dir(C::INODE_ROOT, path)
+    }
+
+    #[inline]
+    fn lookup_in_dir(&self, parent_inode: u64, path: &str) -> Result<u64, RofsError> {
+        let parent = parent_inode.wrapping_sub(C::INODE_ROOT) as u32;
         let path = normalize_path::<C>(path);
-        match self.inode_by_path_ignore_ascii_case(path) {
+
+        match self.inode_by_path_ignore_ascii_case(parent, path) {
             Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
             None => Err(RofsError::NotFound),
         }
@@ -488,8 +503,15 @@ where
 
     #[inline]
     fn lookup(&self, path: &str) -> Result<u64, RofsError> {
+        self.lookup_in_dir(C::INODE_ROOT, path)
+    }
+
+    #[inline]
+    fn lookup_in_dir(&self, parent_inode: u64, path: &str) -> Result<u64, RofsError> {
+        let parent = parent_inode.wrapping_sub(C::INODE_ROOT) as u32;
         let path = normalize_path::<C>(path);
-        match self.inode_by_path_ignore_ascii_case(path) {
+
+        match self.inode_by_path_ignore_ascii_case(parent, path) {
             Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
             None => Err(RofsError::NotFound),
         }

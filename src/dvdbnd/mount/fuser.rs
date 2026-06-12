@@ -117,12 +117,7 @@ where
             return;
         };
 
-        let Ok(parent) = fs.path(parent.0) else {
-            reply.error(Errno::ENOENT);
-            return;
-        };
-
-        let Ok(ino) = fs.lookup([parent, name]) else {
+        let Ok(ino) = fs.lookup_in_dir(parent.0, name) else {
             reply.error(Errno::ENOENT);
             return;
         };
@@ -293,7 +288,7 @@ where
             return;
         };
 
-        let iter = match fs.entries_iter(range.clone()) {
+        let iter = match fs.entry_iter(range.clone()) {
             Ok(iter) => iter,
             Err(e) => {
                 warn!("got bad range: {e}");
@@ -303,14 +298,9 @@ where
         };
 
         for ((ino, entry), next) in range.zip(iter).zip(1..).skip(offset as usize) {
-            let Ok(path) = fs.path(ino) else {
+            let Ok(name) = fs.name(ino) else {
                 warn!("failed to retrieve path for {ino}");
                 continue;
-            };
-
-            let name = match path.rsplit_once('/') {
-                Some((_, name)) => name,
-                None => path,
             };
 
             if reply.add(INodeNo(ino), next, file_type(&entry), name) {
@@ -336,7 +326,7 @@ where
             return;
         };
 
-        let iter = match fs.entries_iter(range.clone()) {
+        let iter = match fs.entry_iter(range.clone()) {
             Ok(iter) => iter,
             Err(e) => {
                 warn!("got bad range: {e}");
@@ -346,14 +336,9 @@ where
         };
 
         for ((ino, entry), next) in range.zip(iter).zip(1..).skip(offset as usize) {
-            let Ok(path) = fs.path(ino) else {
+            let Ok(name) = fs.name(ino) else {
                 warn!("failed to retrieve path for {ino}");
                 continue;
-            };
-
-            let name = match path.rsplit_once('/') {
-                Some((_, name)) => name,
-                None => path,
             };
 
             let ino = INodeNo(ino);
@@ -379,7 +364,7 @@ where
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
-        let files = match self.fs.as_rofs().entries_iter(..) {
+        let files = match self.fs.as_rofs().entry_iter(..) {
             Ok(entries) => entries.len() as u64,
             Err(_) => 0,
         };
