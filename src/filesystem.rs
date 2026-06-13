@@ -10,6 +10,7 @@ use std::{
     ops::{Bound, Range, RangeBounds},
 };
 
+use eytzinger::{SliceExt, permutation::InplacePermutator};
 use fxhash::FxHashMap;
 use rkyv::{Archive, Serialize};
 use thiserror::Error;
@@ -204,7 +205,6 @@ impl<T, C: Config> Rofs<T, C> {
                 }
             }
 
-            // TODO: try Eytzinger layout.
             // TODO: try packing short (10 or fewer ASCII chars) names as an alternative
             // `name_index` repr, 6 bits per (Windows path valid) char.
             // They should be quick to convert (use a LUT) and compare (store in BE order,
@@ -216,6 +216,8 @@ impl<T, C: Config> Rofs<T, C> {
                 let (len, rest) = name.split_first().unwrap_unchecked();
                 rest.get_unchecked(..*len as usize)
             });
+
+            nodes[first..].eytzingerize(&mut InplacePermutator);
         }
 
         Rofs {
@@ -285,13 +287,14 @@ impl<T, C: Config> Rofs<T, C> {
             // SAFETY: same as in `Rofs::new`.
             // Note this wouldn't be safe in the archived version.
             index = start
-                + self.nodes[start..end]
-                    .binary_search_by_key(&component.as_bytes(), |node| unsafe {
+                + self.nodes[start..end].eytzinger_search_by_key(
+                    &component.as_bytes(),
+                    |node| unsafe {
                         let name = self.names.get_unchecked(node.name_index()..);
                         let (len, rest) = name.split_first().unwrap_unchecked();
                         rest.get_unchecked(..*len as usize)
-                    })
-                    .ok()?;
+                    },
+                )?;
 
             if components.peek().is_none() {
                 break Some(index as u32);
@@ -402,14 +405,15 @@ where
             let end = start + child_count.to_native() as usize;
 
             index = start
-                + self.nodes[start..end]
-                    .binary_search_by_key(&component.as_bytes(), |node| {
+                + self.nodes[start..end].eytzinger_search_by_key(
+                    &component.as_bytes(),
+                    |node| {
                         let name_index = node.name_index.to_native() as usize;
                         let name = &self.names[name_index..];
                         let (len, rest) = name.split_first().unwrap();
                         &rest[..*len as usize]
-                    })
-                    .ok()?;
+                    },
+                )?;
 
             if components.peek().is_none() {
                 break Some(index as u32);

@@ -19,6 +19,7 @@ compio = { version = "0.19.0", default-features = false, features = [
     "runtime",
 ] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
+eytzinger = { version = "1.1.2", default-features = false, features = ["branchless"] }
 futures-util = "0.3.32"
 fxhash = "0.2.1"
 indexmap = "2.14.0"

@@ -597,6 +597,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "eytzinger"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "431e6b273df733eaf9c83aa4e67b67e99604e154f0cde049a5307dca30575c3e"
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -635,6 +641,7 @@ dependencies = [
  "color-eyre",
  "compio",
  "ctrlc",
+ "eytzinger",
  "fuser",
  "futures-util",
  "fxhash",
