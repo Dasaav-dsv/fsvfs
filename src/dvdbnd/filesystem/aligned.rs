@@ -195,7 +195,13 @@ async fn read(
     };
 
     match file.read_managed_at(len, pos).await {
-        Ok(buf) => Some(Ok((buf?, file_offset))),
+        Ok(buf) => buf.map(|buf| {
+            if buf.len() >= len {
+                Ok((buf, file_offset))
+            } else {
+                Err(io::ErrorKind::UnexpectedEof.into())
+            }
+        }),
         Err(e) => Some(Err(e)),
     }
 }
