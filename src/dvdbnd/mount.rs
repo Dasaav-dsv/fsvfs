@@ -15,9 +15,8 @@ use crate::{
         bhd5::FileAny,
         dict::Dictionary,
         filesystem::{
-            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder,
-            aligned::{self, AlignedBuf},
-            encryption::{Ciphertext, CiphertextBuffer, EncryptionStore},
+            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, aligned,
+            encryption::{BLOCK_SIZE, Ciphertext, CiphertextBuffer, EncryptionStore},
         },
         keys::Keys,
     },
@@ -47,7 +46,7 @@ struct BdtTls {
 #[derive(Debug)]
 struct Bdt {
     path: Box<Path>,
-    #[cfg_attr(any(windows, not(test)), expect(unused))]
+    #[cfg_attr(windows, expect(unused))]
     size: u64,
 }
 
@@ -148,11 +147,30 @@ where
         let file_len = file.unpadded_len();
         let file_padded_len = file.len();
 
-        let file_offset = file_offset.min(file_len as u64);
-        let len = len.min(file_len - file_offset as u32);
+        let file_offset = file_offset.min(file_len as u64) as u32;
+        let len = len.min(file_len - file_offset);
 
         let file_start = file.data_offset();
-        let data_start = file_start + file_offset;
+        let data_start = file_start + file_offset as u64;
+
+        let end = file_offset + len;
+
+        let mut f = move |buffer: &[u8], file_offset: i64| -> eyre::Result<()> {
+            let Ok(file_offset) = u32::try_from(file_offset) else {
+                return Ok(());
+            };
+
+            let buffer_end = file_offset + buffer.len() as u32;
+
+            let end = buffer_end.min(end).saturating_sub(file_offset);
+            let buffer = &buffer[..end as usize];
+
+            if !buffer.is_empty() {
+                f(buffer, file_offset)
+            } else {
+                Ok(())
+            }
+        };
 
         let bdt = self.bdts.open(file.src_index()).await?;
 
@@ -163,7 +181,6 @@ where
                     data_start,
                     len,
                     file_start,
-                    file_len,
                     file_padded_len,
                     encryption_index,
                     f,
@@ -180,11 +197,7 @@ where
         ));
 
         while let Some((buffer, file_offset)) = stream.try_next().await? {
-            if !buffer.is_empty()
-                && let Ok(file_offset) = u32::try_from(file_offset)
-            {
-                f((*buffer).as_ref(), file_offset)?;
-            }
+            f(&buffer, file_offset)?;
         }
 
         Ok(())
@@ -196,18 +209,17 @@ where
         data_start: u64,
         len: u32,
         file_start: u64,
-        file_len: u32,
         file_padded_len: u32,
         encryption_index: usize,
-        mut f: impl FnMut(&[u8], u32) -> eyre::Result<()>,
+        mut f: impl FnMut(&[u8], i64) -> eyre::Result<()>,
     ) -> eyre::Result<()> {
-        let start_offset = (data_start - file_start) as u32;
-        let end_offset = start_offset + len;
+        let start = (data_start - file_start) as u32;
+        let end = start + len;
 
         let encryption_store = self.fs.encryption_store();
 
         let mut stream =
-            aligned::stream_read_context(bdt, data_start, len, file_start, file_padded_len);
+            aligned::stream_read_windows(bdt, data_start, len, file_start, file_padded_len);
 
         let mut cbuf = CiphertextBuffer::default();
         let mut is_last = false;
@@ -225,9 +237,18 @@ where
                 cbuf.finish();
             }
 
-            let file_offset = cbuf.curr().1;
-            if file_offset < start_offset as i64 || file_offset >= end_offset as i64 {
+            let &mut (ref mut buffer, file_offset) = cbuf.curr();
+
+            if file_offset < start as i64 || file_offset >= end as i64 {
                 continue;
+            }
+
+            let buffer_len = buffer.len() as u32;
+            let buffer_end = file_offset as u32 + buffer_len;
+
+            if let Some(overread) = buffer_end.checked_sub(end) {
+                let requested_len = buffer_len.saturating_sub(overread);
+                buffer.truncate(requested_len as usize + BLOCK_SIZE - 1);
             }
 
             let ciphertext = Ciphertext::from_buffer(&mut cbuf);
@@ -236,22 +257,9 @@ where
                 .decrypt(encryption_index, ciphertext)?
                 .await?;
 
-            let curr = cbuf.curr();
+            let (buffer, file_offset) = cbuf.curr();
 
-            let buffer = &mut curr.0;
-            let file_offset = curr.1 as u32;
-
-            let buffer_len = buffer.len() as u32;
-            let buffer_end = file_offset + buffer_len;
-
-            if let Some(padding) = buffer_end.checked_sub(file_len) {
-                let unpadded_len = buffer_len.saturating_sub(padding);
-                buffer.truncate(unpadded_len as usize);
-            }
-
-            if !buffer.is_empty() {
-                f(buffer, file_offset)?;
-            }
+            f(buffer, *file_offset)?;
         }
 
         Ok(())

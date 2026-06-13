@@ -15,27 +15,25 @@ use compio::{
     io::AsyncReadManagedAt,
 };
 use futures_util::{FutureExt, Stream, StreamExt, stream};
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec_inline};
 
 use crate::dvdbnd::filesystem::aligned::split::SplitBuf;
 
 pub mod split;
 
-pub const ALIGNMENT: NonZero<usize> = NonZero::new(4096).unwrap();
+pub const ALIGNMENT: NonZero<usize> = cfg_select! {
+    unix => NonZero::new(64).unwrap(),
+    windows => NonZero::new(512).unwrap(),
+};
+
+pub const WINDOW_SIZE: usize = ALIGNMENT.get();
 pub const BUFFER_LEN: usize = AlignedBufferAllocator::BUFFER_LEN;
 
-// TODO: try putting it in Rc<Slice<BufferRef>>
 pub type AlignedBufferRef = (BufferRef, i64);
 pub type AlignedDynBufferRef = (Box<dyn DynAlignedBuf>, i64);
 
 pub trait DynAlignedBuf: Deref<Target = [u8]> + DerefMut {
     fn truncate(&mut self, new_len: usize);
-}
-
-pub trait AlignedBuf {
-    fn len(&self) -> usize;
-
-    fn is_empty(&self) -> bool;
 }
 
 impl<B> DynAlignedBuf for B
@@ -50,16 +48,6 @@ where
         unsafe {
             self.set_len(new_len);
         }
-    }
-}
-
-impl AlignedBuf for dyn DynAlignedBuf {
-    fn len(&self) -> usize {
-        self.as_ref().len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.as_ref().is_empty()
     }
 }
 
@@ -81,13 +69,10 @@ pub fn stream_read(
         (len, pos)
     });
 
-    stream::iter(body).filter_map(move |(len, pos)| {
-        let file = file.clone();
-        do_read(file, len, pos, file_start)
-    })
+    stream::iter(body).filter_map(move |(len, pos)| read(file.clone(), len, pos, file_start))
 }
 
-pub fn stream_read_context(
+pub fn stream_read_windows(
     file: File,
     start: u64,
     len: u32,
@@ -96,13 +81,13 @@ pub fn stream_read_context(
 ) -> Pin<Box<dyn Stream<Item = io::Result<AlignedDynBufferRef>>>> {
     let (end, file_end) = end_bounds(start, len, file_start, file_len);
 
-    let file = match stream_read_window(file, start, len, file_start, file_end) {
+    let file = match stream_read_one_window(file, start, len, file_start, file_end) {
         Ok(window) => return window,
         Err(file) => file,
     };
 
     let head = iter::once({
-        let pos = start.saturating_sub(BUFFER_LEN as u64).max(file_start);
+        let pos = start.saturating_sub(WINDOW_SIZE as u64).max(file_start);
         let len = (start - pos) as usize;
         (len, pos)
     });
@@ -114,16 +99,13 @@ pub fn stream_read_context(
 
     let tail = iter::once({
         let pos = end;
-        let end = pos.strict_add(BUFFER_LEN as u64).min(file_end);
+        let end = pos.strict_add(WINDOW_SIZE as u64).min(file_end);
         let len = (end - pos) as usize;
         (len, pos)
     });
 
     stream::iter(head.chain(body).chain(tail))
-        .filter_map(move |(len, pos)| {
-            let file = file.clone();
-            do_read_dyn(file, len, pos, file_start)
-        })
+        .filter_map(move |(len, pos)| read_dyn(file.clone(), len, pos, file_start))
         .boxed_local()
 }
 
@@ -145,50 +127,46 @@ fn end_bounds(start: u64, len: u32, file_start: u64, file_len: u32) -> (u64, u64
     (end, file_end)
 }
 
-fn stream_read_window(
+fn stream_read_one_window(
     file: File,
     start: u64,
     len: u32,
     file_start: u64,
     file_end: u64,
 ) -> Result<Pin<Box<dyn Stream<Item = io::Result<AlignedDynBufferRef>>>>, File> {
-    const WINDOW_HEAD: usize = ALIGNMENT.get();
-    const WINDOW_TAIL: usize = cfg_select! {
-        windows => ALIGNMENT.get(),
-        unix => 32,
-    };
-
-    const WINDOW_MAX: usize = BUFFER_LEN - WINDOW_HEAD - WINDOW_TAIL;
+    const WINDOW_MAX: usize = BUFFER_LEN - WINDOW_SIZE * 2;
 
     if len > WINDOW_MAX as u32 {
         return Err(file);
     }
 
-    let Some(pos) = start.checked_sub(WINDOW_HEAD as u64) else {
+    let Some(pos) = start.checked_sub(WINDOW_SIZE as u64) else {
         return Err(file);
     };
 
     let end = (start + len as u64)
-        .saturating_add(WINDOW_TAIL as u64)
+        .saturating_add(WINDOW_SIZE as u64)
         .min(file_end);
 
     let stream = async move {
-        let res = do_read(file, (end - pos) as usize, pos, file_start).await;
+        let res = read(file, (end - pos) as usize, pos, file_start).await;
 
         let mut context = SmallVec::<[io::Result<AlignedDynBufferRef>; 3]>::new_const();
 
         if let Some(res) = res {
             match res {
                 Ok((buf, head_offset)) => {
-                    let (head, rest) = buf.split(WINDOW_HEAD);
+                    let (head, rest) = buf.split(WINDOW_SIZE);
                     let (body, tail) = rest.split(len as usize);
 
-                    let body_offset = head_offset + WINDOW_HEAD as i64;
+                    let body_offset = head_offset + WINDOW_SIZE as i64;
                     let tail_offset = body_offset + len as i64;
 
-                    context.push(Ok((Box::new(head), head_offset)));
-                    context.push(Ok((Box::new(body), body_offset)));
-                    context.push(Ok((Box::new(tail), tail_offset)));
+                    context = smallvec_inline![
+                        Ok((Box::new(head), head_offset)),
+                        Ok((Box::new(body), body_offset)),
+                        Ok((Box::new(tail), tail_offset)),
+                    ];
                 }
                 Err(e) => context.push(Err(e)),
             }
@@ -202,7 +180,7 @@ fn stream_read_window(
     Ok(stream)
 }
 
-async fn do_read(
+async fn read(
     file: File,
     len: usize,
     pos: u64,
@@ -222,13 +200,13 @@ async fn do_read(
     }
 }
 
-fn do_read_dyn(
+fn read_dyn(
     file: File,
     len: usize,
     pos: u64,
     file_start: u64,
 ) -> impl Future<Output = Option<io::Result<(Box<dyn DynAlignedBuf>, i64)>>> {
-    do_read(file, len, pos, file_start).map(|opt| {
+    read(file, len, pos, file_start).map(|opt| {
         opt.map(|res| {
             res.map(|(buf, file_offset)| (Box::new(buf) as Box<dyn DynAlignedBuf>, file_offset))
         })
@@ -240,19 +218,20 @@ struct AlignedBufferAllocator {
     buffers: UnsafeCell<AlignedBuffers<{ Self::ARRAY_LEN }>>,
 }
 
-#[repr(align(8192))]
+#[repr(C, align(4096))]
 struct AlignedBuffers<const N: usize>(MaybeUninit<[u8; N]>);
 
 const _: () = assert!(align_of::<AlignedBuffers<1>>().is_multiple_of(ALIGNMENT.get()));
 
 impl AlignedBufferAllocator {
+    const BUFFER_BLOCK_LEN: usize = 4096;
     const BUFFER_BLOCKS: usize = 8;
 
     const POOL_SIZE: NonZero<usize> = NonZero::new(usize::BITS as usize).unwrap();
-    const BUFFER_LEN: usize = Self::BUFFER_BLOCKS * ALIGNMENT.get();
+    const BUFFER_LEN: usize = Self::BUFFER_BLOCKS * Self::BUFFER_BLOCK_LEN;
 
     const ARRAY_BLOCKS: usize = Self::POOL_SIZE.get() * Self::BUFFER_BLOCKS;
-    const ARRAY_LEN: usize = Self::ARRAY_BLOCKS * ALIGNMENT.get();
+    const ARRAY_LEN: usize = Self::POOL_SIZE.get() * Self::BUFFER_LEN;
 
     fn new() -> Box<Self> {
         unsafe {

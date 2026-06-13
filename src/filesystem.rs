@@ -67,7 +67,7 @@ pub trait ReadOnlyFilesystem {
 
     fn lookup_in_dir(&self, parent_inode: u64, path: &str) -> Result<u64, RofsError>;
 
-    #[cfg_attr(any(windows, not(test)), expect(unused))]
+    #[cfg_attr(windows, expect(unused))]
     fn entry_iter<R>(
         &self,
         range: R,
