@@ -79,7 +79,7 @@ pub trait ReadOnlyFilesystem {
 #[derive(Clone, Copy, Debug, Archive, Serialize)]
 struct Node {
     content: NodeContent,
-    name_index: u64,
+    name_index: u32,
 }
 
 #[derive(Clone, Copy, Debug, Archive, Serialize)]
@@ -205,11 +205,6 @@ impl<T, C: Config> Rofs<T, C> {
                 }
             }
 
-            // TODO: try packing short (10 or fewer ASCII chars) names as an alternative
-            // `name_index` repr, 6 bits per (Windows path valid) char.
-            // They should be quick to convert (use a LUT) and compare (store in BE order,
-            // reserve one bit to mark continuation for longer strings).
-            //
             // SAFETY: indices and lengths are valid for length-prefixed strings.
             nodes[first..].sort_unstable_by_key(|node| unsafe {
                 let name = names.get_unchecked(node.name_index()..);
@@ -317,19 +312,21 @@ where
 
 impl Node {
     fn new_dir(child_index: NonZero<u32>, child_count: u32, name_index: usize) -> Self {
+        let name_index = u32::try_from(name_index).expect("name index too large");
         Self {
             content: NodeContent::Dir {
                 child_index,
                 child_count,
             },
-            name_index: name_index as u64,
+            name_index,
         }
     }
 
     fn new_file(data_index: u32, name_index: usize) -> Self {
+        let name_index = u32::try_from(name_index).expect("name index too large");
         Self {
             content: NodeContent::File { data_index },
-            name_index: name_index as u64,
+            name_index,
         }
     }
 
