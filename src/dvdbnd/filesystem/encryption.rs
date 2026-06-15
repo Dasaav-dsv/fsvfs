@@ -1,7 +1,10 @@
+use std::num::NonZero;
+
 use aes::cipher::{
     BlockCipherDecrypt, KeyInit,
     array::{AsArrayMut, AsArrayRef},
 };
+use async_trait::async_trait;
 use futures_util::TryFutureExt;
 use rkyv::{Archive, Portable, Serialize};
 use thiserror::Error;
@@ -34,9 +37,13 @@ pub enum StoreError {
 
 #[derive(Debug, Error)]
 pub enum DecryptError {
-    #[error("the specified index ({0}) is invalid (this indicates a bug in fsvfs)")]
-    Index(usize),
+    #[error("the encryption id ({0:?}) is invalid")]
+    Id(EncryptionId),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize)]
+#[repr(transparent)]
+pub struct EncryptionId(NonZero<u32>);
 
 #[derive(Debug)]
 pub struct Ciphertext<'a> {
@@ -61,36 +68,36 @@ enum Pos {
     _2 = 2,
 }
 
+#[async_trait(?Send)]
 pub trait EncryptionStore {
-    fn decrypt(
-        &self,
-        index: usize,
-        ciphertext: Ciphertext<'_>,
-    ) -> Result<impl Future<Output = Result<(), DecryptError>>, DecryptError>;
+    async fn decrypt<'a>(
+        &'a self,
+        index: EncryptionId,
+        ciphertext: Ciphertext<'a>,
+    ) -> Result<(), DecryptError>;
 }
 
-impl<S: AsRef<[u8]>> EncryptionStore for S {
-    fn decrypt(
-        &self,
-        index: usize,
-        ciphertext: Ciphertext<'_>,
-    ) -> Result<impl Future<Output = Result<(), DecryptError>>, DecryptError> {
-        let store = self
-            .as_ref()
-            .get(index..)
-            .ok_or(DecryptError::Index(index))?;
+impl EncryptionId {
+    fn try_from_index(index: usize) -> Option<Self> {
+        let non_zero = NonZero::<usize>::new(index ^ u32::MAX as usize)?;
+        non_zero.try_into().ok().map(Self)
+    }
 
-        let (header, data) =
-            Header::try_ref_from_prefix(store).map_err(|_| DecryptError::Index(index))?;
+    fn into_index(self) -> usize {
+        (self.0.get() ^ u32::MAX) as usize
+    }
+}
 
-        Ok(header.decrypt(index, ciphertext, data))
+impl ArchivedEncryptionId {
+    pub fn get(&self) -> EncryptionId {
+        EncryptionId(self.0.to_native())
     }
 }
 
 impl<'a> Ciphertext<'a> {
-    pub fn from_buffer(context: &'a mut CiphertextBuffer) -> Self {
-        let prev = context.prev();
-        let next = context.next();
+    pub fn from_buffer(buf: &'a mut CiphertextBuffer) -> Self {
+        let prev = buf.prev();
+        let next = buf.next();
 
         let left = BLOCK_SIZE.saturating_sub(prev.len());
         let right = prev.len().saturating_sub(BLOCK_SIZE);
@@ -103,7 +110,7 @@ impl<'a> Ciphertext<'a> {
         let mut tail = [0; BLOCK_SIZE];
         tail[..len].copy_from_slice(&next[..len]);
 
-        let (body, file_offset) = context.curr();
+        let (body, file_offset) = buf.curr();
 
         let file_offset =
             u32::try_from(*file_offset).expect("current file offset must not be negative");
@@ -191,11 +198,29 @@ impl Pos {
     }
 }
 
+#[async_trait(?Send)]
+impl<S: AsRef<[u8]>> EncryptionStore for S {
+    async fn decrypt<'a>(
+        &'a self,
+        id: EncryptionId,
+        ciphertext: Ciphertext<'a>,
+    ) -> Result<(), DecryptError> {
+        let index = id.into_index();
+
+        let store = self.as_ref().get(index..).ok_or(DecryptError::Id(id))?;
+
+        let (header, data) =
+            Header::try_ref_from_prefix(store).map_err(|_| DecryptError::Id(id))?;
+
+        header.decrypt(id, ciphertext, data).await
+    }
+}
+
 pub fn store_encryption<O, E>(
     entry: &E,
     encryption: &Encryption<O>,
     out: &mut Vec<u8>,
-) -> Result<usize, StoreError>
+) -> Result<EncryptionId, StoreError>
 where
     O: ByteOrderExt,
     E: Bhd5Entry<O>,
@@ -242,7 +267,7 @@ where
         .map_err(|_| StoreError::TooManyRanges)?;
 
     let header = Header::Aes128EcbNone(Aes128 { key, range_count });
-    let index = out.len();
+    let index = EncryptionId::try_from_index(out.len()).ok_or(StoreError::TooManyRanges)?;
 
     out.extend_from_slice(header.as_bytes());
     out.extend_from_slice(ranges.as_bytes());
@@ -327,7 +352,7 @@ impl Range {
 impl Header {
     fn decrypt(
         &self,
-        index: usize,
+        id: EncryptionId,
         ciphertext: Ciphertext<'_>,
         data: &[u8],
     ) -> impl Future<Output = Result<(), DecryptError>> {
@@ -337,7 +362,7 @@ impl Header {
 
                 aes.decrypt(key, ciphertext, data)
                     .map_err(move |e| match e {
-                        AesError::Range => DecryptError::Index(index),
+                        AesError::Range => DecryptError::Id(id),
                     })
             }
         }

@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 aes = "0.9.0"
+async-trait = "0.1.89"
 base64 = "0.22.1"
 clap = { version = "4.6.1", features = ["derive"] }
 color-eyre = "0.6.5"

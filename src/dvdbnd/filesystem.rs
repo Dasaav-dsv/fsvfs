@@ -12,7 +12,9 @@ use crate::{
             format::{Buckets, Encryption, File as Bhd5File, FileEntry as Bhd5Entry},
         },
         dict::Dictionary,
-        filesystem::encryption::{EncryptionStore, store_encryption},
+        filesystem::encryption::{
+            ArchivedEncryptionId, EncryptionId, EncryptionStore, store_encryption,
+        },
     },
     filesystem::{Config, ReadOnlyFilesystem, Rofs, RofsBuilder},
 };
@@ -35,7 +37,7 @@ pub trait DvdbndFile {
 
     fn unpadded_len(&self) -> u32;
 
-    fn encryption_index(&self) -> Option<usize>;
+    fn encryption_id(&self) -> Option<EncryptionId>;
 }
 
 #[derive(Debug, Archive, Serialize)]
@@ -59,7 +61,7 @@ struct File {
     len: u32,
     unpadded_len: u32,
     src_index: u32,
-    encryption_index: Option<NonZero<u32>>,
+    encryption_id: Option<EncryptionId>,
 }
 
 impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
@@ -166,16 +168,9 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
             .flatten()
             .zip(encryption)
             .map(|(entry, encryption)| {
-                let encryption_index = match encryption
-                    .map(|encryption| store_encryption(entry, encryption, encryption_store))
-                {
-                    Some(index) => {
-                        let index = NonZero::new(index? ^ u32::MAX as usize)
-                            .unwrap()
-                            .try_into()
-                            .expect("too many encryption entries");
-
-                        Some(index)
+                let encryption_id = match encryption {
+                    Some(encryption) => {
+                        Some(store_encryption(entry, encryption, encryption_store)?)
                     }
                     None => None,
                 };
@@ -204,7 +199,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
                     src_index,
                     len: entry.file_size(),
                     unpadded_len: entry.unpadded_file_size().map(NonZero::get).unwrap_or(0),
-                    encryption_index,
+                    encryption_id,
                 };
 
                 Ok((path, file))
@@ -256,9 +251,8 @@ impl DvdbndFile for File {
     }
 
     #[inline]
-    fn encryption_index(&self) -> Option<usize> {
-        self.encryption_index
-            .map(|index| (index.get() ^ u32::MAX) as usize)
+    fn encryption_id(&self) -> Option<EncryptionId> {
+        self.encryption_id
     }
 }
 
@@ -299,10 +293,8 @@ impl DvdbndFile for ArchivedFile {
     }
 
     #[inline]
-    fn encryption_index(&self) -> Option<usize> {
-        self.encryption_index
-            .as_ref()
-            .map(|index| (index.get() ^ u32::MAX) as usize)
+    fn encryption_id(&self) -> Option<EncryptionId> {
+        self.encryption_id.as_ref().map(ArchivedEncryptionId::get)
     }
 }
 

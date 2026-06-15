@@ -16,7 +16,7 @@ use crate::{
         dict::Dictionary,
         filesystem::{
             DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, aligned,
-            encryption::{BLOCK_SIZE, Ciphertext, CiphertextBuffer, EncryptionStore},
+            encryption::{BLOCK_SIZE, Ciphertext, CiphertextBuffer, EncryptionId, EncryptionStore},
         },
         keys::Keys,
     },
@@ -174,7 +174,7 @@ where
 
         let bdt = self.bdts.open(file.src_index()).await?;
 
-        if let Some(encryption_index) = file.encryption_index() {
+        if let Some(encryption_id) = file.encryption_id() {
             return self
                 .read_and_decrypt_file(
                     bdt,
@@ -182,7 +182,7 @@ where
                     len,
                     file_start,
                     file_padded_len,
-                    encryption_index,
+                    encryption_id,
                     f,
                 )
                 .await;
@@ -210,7 +210,7 @@ where
         len: u32,
         file_start: u64,
         file_padded_len: u32,
-        encryption_index: usize,
+        encryption_id: EncryptionId,
         mut f: impl FnMut(&[u8], i64) -> eyre::Result<()>,
     ) -> eyre::Result<()> {
         let start = (data_start - file_start) as u32;
@@ -251,10 +251,8 @@ where
                 buffer.truncate(requested_len as usize + BLOCK_SIZE - 1);
             }
 
-            let ciphertext = Ciphertext::from_buffer(&mut cbuf);
-
             encryption_store
-                .decrypt(encryption_index, ciphertext)?
+                .decrypt(encryption_id, Ciphertext::from_buffer(&mut cbuf))
                 .await?;
 
             let (buffer, file_offset) = cbuf.curr();
