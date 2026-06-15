@@ -47,12 +47,7 @@ pub fn mount(
         ),
     );
 
-    let mount = time!(
-        DvdbndMount::from_keys_and_dict(&keys, dict.as_ref())?,
-        |t| info!("built filesystem mount ({t:.02?})"),
-    );
-
-    mount.mount(mountpoint)?;
+    DvdbndMount::from_keys_and_dict(&keys, dict.as_ref())?.mount(mountpoint)?;
 
     Ok(())
 }
@@ -94,19 +89,17 @@ fn recursive_read_files(
         }
     }
 
-    Ok(iter::from_fn(move || {
-        loop {
-            if let Some(entry_res) = iter.next() {
-                if let Some(res) = map_result(entry_res, &mut dirs) {
-                    return Some(res);
-                }
-                continue;
+    Ok(iter::from_fn(move || loop {
+        if let Some(entry_res) = iter.next() {
+            if let Some(res) = map_result(entry_res, &mut dirs) {
+                return Some(res);
             }
+            continue;
+        }
 
-            match fs::read_dir(dirs.pop_front()?) {
-                Ok(next) => iter = next,
-                Err(e) => return Some(Err(e)),
-            }
+        match fs::read_dir(dirs.pop_front()?) {
+            Ok(next) => iter = next,
+            Err(e) => return Some(Err(e)),
         }
     }))
 }
