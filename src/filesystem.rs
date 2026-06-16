@@ -644,7 +644,9 @@ mod tests {
         F: ReadOnlyFilesystem,
     {
         assert_eq!(f.lookup(".").unwrap(), 1);
-        assert_eq!(f.name(1).unwrap(), ".");
+        assert_eq!(f.lookup("").unwrap(), 1);
+
+        assert_eq!(f.name(1).unwrap(), "");
 
         for &path in paths {
             let inode = f.lookup(path).unwrap();
