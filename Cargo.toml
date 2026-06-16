@@ -15,7 +15,6 @@ compio = { version = "0.19.0", default-features = false, features = [
     "dispatcher",
     "fs",
     "polling",
-    "io-uring",
     "io",
     "iocp-wait-packet",
     "runtime",

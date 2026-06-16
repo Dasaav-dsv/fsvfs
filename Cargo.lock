@@ -350,9 +350,7 @@ dependencies = [
  "crossbeam-queue",
  "flume",
  "futures-util",
- "io-uring",
  "libc",
- "linux-raw-sys",
  "mod_use",
  "once_cell",
  "pastey",
@@ -835,17 +833,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
 dependencies = [
  "hybrid-array",
-]
-
-[[package]]
-name = "io-uring"
-version = "0.7.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d09b98f7eace8982db770e4408e7470b028ce513ac28fecdc6bf4c30fe92b62"
-dependencies = [
- "bitflags",
- "cfg-if",
- "libc",
 ]
 
 [[package]]
