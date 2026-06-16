@@ -38,6 +38,9 @@ use windows::{
             },
         },
         System::LibraryLoader::LoadLibraryW,
+        UI::WindowsAndMessaging::{
+            IDCANCEL, IDOK, MB_ICONWARNING, MB_OKCANCEL, MESSAGEBOX_RESULT, MessageBoxW,
+        },
     },
     core::{Error as WindowsError, GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
 };
@@ -562,6 +565,8 @@ fn require_projfs() -> eyre::Result<()> {
 
     warn!("the ProjFS library failed to initialize: {e}");
 
+    prompt_user_before_uac()?;
+
     let has_projfs = runas_powershell_command(
         "if ((Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State -eq 'disabled') { exit 1 }",
     )?;
@@ -573,14 +578,14 @@ fn require_projfs() -> eyre::Result<()> {
             "exit (Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart).ExitCode",
         )?.success();
 
-        if !enable_projfs {
-            return Err(eyre!(
-                "failed to enable ProjFS! See https://learn.microsoft.com/en-us/windows/win32/projfs/enabling-windows-projected-file-system"
-            ));
+        if enable_projfs {
+            return Ok(());
         }
     }
 
-    Ok(())
+    Err(eyre!(
+        "failed to enable ProjFS! See https://learn.microsoft.com/en-us/windows/win32/projfs/enabling-windows-projected-file-system"
+    ))
 }
 
 fn try_load_projfs() -> eyre::Result<()> {
@@ -597,6 +602,24 @@ fn try_load_projfs() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+fn prompt_user_before_uac() -> eyre::Result<()> {
+    const ERROR: MESSAGEBOX_RESULT = MESSAGEBOX_RESULT(0);
+
+    const CAPTION: PCWSTR = w!("Enable ProjFS");
+    const TEXT: PCWSTR = w!(
+        "fsvfs requires ProjFS to be enabled on your system.\nYou will be prompted for Administrator priveleges!"
+    );
+
+    let res = unsafe { MessageBoxW(None, TEXT, CAPTION, MB_OKCANCEL | MB_ICONWARNING) };
+
+    match res {
+        IDOK => Ok(()),
+        IDCANCEL => Err(eyre!("ProjFS initialization was canceled by the user")),
+        ERROR => Err(WindowsError::from_thread().into()),
+        _ => Err(eyre!("unknown MessageBoxW return kind")),
+    }
 }
 
 fn init_mountpoint(mountpoint: &str) -> eyre::Result<HSTRING> {
