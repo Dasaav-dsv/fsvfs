@@ -30,7 +30,7 @@ malachite = { version = "0.9.1", default-features = false, features = [
     "std",
 ] }
 rayon = "1.12.0"
-rkyv = { version = "0.8.16", features = ["hashbrown-0_17"] }
+rkyv = "0.8.16"
 smallvec = { version = "1.15.1", features = [
     "const_generics",
     "union",
