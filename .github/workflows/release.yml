@@ -1,0 +1,61 @@
+name: Publish release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags:
+      - "v*.*.*"
+    
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release
+        id: create
+        uses: softprops/action-gh-release@v3
+        if: github.ref_type == 'tag'
+        with:
+          name: ${{ github.ref_name }}
+          draft: true
+          prerelease: false
+          generate_release_notes: false
+          files: |
+            dist
+
+  build:
+    needs: create
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+  
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+  
+      - name: Build
+        run: cargo build --release
+
+      - name: Configure git
+        run: |
+            git config --global user.name "github-actions"
+            git config --global user.email "github-actions@users.noreply.github.com"
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.create.outputs.tag_name }}
+          files: |
+            target/release/fsvfs
+            target/release/fsvfs.exe
