@@ -20,7 +20,7 @@ use crate::{
         filesystem::{DvdbndFile, DvdbndFilesystem},
         mount::DvdbndMount,
     },
-    filesystem::{Entry, ReadOnlyFilesystem},
+    filesystem::{Entry, EntryKind, ReadOnlyFilesystem},
     thread::{OnInterrupt, run_until_interrupted},
 };
 
@@ -62,7 +62,11 @@ where
     fn file_attr<T: DvdbndFile>(&self, ino: INodeNo, entry: &Entry<'_, T>) -> FileAttr {
         let kind = file_type(entry);
 
-        let (size, blocks) = if let Entry::File(data) = entry {
+        let (size, blocks) = if let Entry {
+            kind: EntryKind::File(data),
+            ..
+        } = entry
+        {
             let size = data.unpadded_len();
             (size as u64, size.div_ceil(BLOCK_SIZE) as u64)
         } else {
@@ -161,7 +165,10 @@ where
         }
 
         match self.fs.as_rofs().entry(ino.0) {
-            Ok(Entry::Dir(_)) => reply.opened(
+            Ok(Entry {
+                kind: EntryKind::Dir(_),
+                ..
+            }) => reply.opened(
                 FileHandle(ino.0),
                 FopenFlags::FOPEN_NOFLUSH | FopenFlags::FOPEN_CACHE_DIR,
             ),
@@ -182,7 +189,10 @@ where
         reply: ReplyData,
     ) {
         if ino.0 == fh.0
-            && let Ok(Entry::File(file)) = self.fs.as_rofs().entry(ino.0)
+            && let Ok(Entry {
+                kind: EntryKind::File(file),
+                ..
+            }) = self.fs.as_rofs().entry(ino.0)
         {
             let file_len = file.unpadded_len();
 
@@ -237,7 +247,10 @@ where
         reply: ReplyEmpty,
     ) {
         if ino.0 == fh.0
-            && let Ok(Entry::File(_)) = self.fs.as_rofs().entry(ino.0)
+            && let Ok(Entry {
+                kind: EntryKind::File(_),
+                ..
+            }) = self.fs.as_rofs().entry(ino.0)
         {
             reply.ok();
         } else {
@@ -254,7 +267,10 @@ where
         reply: ReplyEmpty,
     ) {
         if ino.0 == fh.0
-            && let Ok(Entry::Dir(_)) = self.fs.as_rofs().entry(ino.0)
+            && let Ok(Entry {
+                kind: EntryKind::Dir(_),
+                ..
+            }) = self.fs.as_rofs().entry(ino.0)
         {
             reply.ok();
         } else {
@@ -281,29 +297,17 @@ where
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let fs = self.fs.as_rofs();
-
-        let Ok(Entry::Dir(range)) = fs.entry(ino.0) else {
+        let Ok(Entry {
+            kind: EntryKind::Dir(iter),
+            ..
+        }) = self.fs.as_rofs().entry(ino.0)
+        else {
             reply.error(Errno::ENOENT);
             return;
         };
 
-        let iter = match fs.entry_iter(range.clone()) {
-            Ok(iter) => iter,
-            Err(e) => {
-                warn!("got bad range: {e}");
-                reply.error(Errno::EBADF);
-                return;
-            }
-        };
-
-        for ((ino, entry), next) in range.zip(iter).zip(1..).skip(offset as usize) {
-            let Ok(name) = fs.name(ino) else {
-                warn!("failed to retrieve path for {ino}");
-                continue;
-            };
-
-            if reply.add(INodeNo(ino), next, file_type(&entry), name) {
+        for (entry, next) in iter.zip(1..).skip(offset as usize) {
+            if reply.add(INodeNo(entry.inode), next, file_type(&entry), entry.name) {
                 break;
             }
         }
@@ -319,32 +323,20 @@ where
         offset: u64,
         mut reply: ReplyDirectoryPlus,
     ) {
-        let fs = self.fs.as_rofs();
-
-        let Ok(Entry::Dir(range)) = fs.entry(ino.0) else {
+        let Ok(Entry {
+            kind: EntryKind::Dir(iter),
+            ..
+        }) = self.fs.as_rofs().entry(ino.0)
+        else {
             reply.error(Errno::ENOENT);
             return;
         };
 
-        let iter = match fs.entry_iter(range.clone()) {
-            Ok(iter) => iter,
-            Err(e) => {
-                warn!("got bad range: {e}");
-                reply.error(Errno::EBADF);
-                return;
-            }
-        };
-
-        for ((ino, entry), next) in range.zip(iter).zip(1..).skip(offset as usize) {
-            let Ok(name) = fs.name(ino) else {
-                warn!("failed to retrieve path for {ino}");
-                continue;
-            };
-
-            let ino = INodeNo(ino);
+        for (entry, next) in iter.zip(1..).skip(offset as usize) {
+            let ino = INodeNo(entry.inode);
             let attr = self.file_attr(ino, &entry);
 
-            if reply.add(ino, next, name, &CACHE_TTL, &attr, Generation(0)) {
+            if reply.add(ino, next, entry.name, &CACHE_TTL, &attr, Generation(0)) {
                 break;
             }
         }
@@ -364,10 +356,7 @@ where
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
-        let files = match self.fs.as_rofs().entry_iter(..) {
-            Ok(entries) => entries.len() as u64,
-            Err(_) => 0,
-        };
+        let files = self.fs.as_rofs().file_count() as u64;
 
         let blocks = self
             .bdts
@@ -400,9 +389,9 @@ where
 }
 
 fn file_type<T>(e: &Entry<'_, T>) -> FileType {
-    match e {
-        Entry::Dir(_) => FileType::Directory,
-        Entry::File(_) => FileType::RegularFile,
+    match &e.kind {
+        EntryKind::Dir(_) => FileType::Directory,
+        EntryKind::File(_) => FileType::RegularFile,
     }
 }
 

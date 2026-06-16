@@ -34,6 +34,7 @@ pub struct Rofs<T, C: Config = DefaultConfig> {
 
 #[derive(Debug)]
 pub struct Entry<'a, T> {
+    pub inode: u64,
     pub name: &'a str,
     pub kind: EntryKind<'a, T>,
 }
@@ -63,6 +64,8 @@ pub trait ReadOnlyFilesystem {
     fn lookup(&self, path: &str) -> Result<u64, RofsError>;
 
     fn lookup_in_dir(&self, parent_inode: u64, path: &str) -> Result<u64, RofsError>;
+
+    fn file_count(&self) -> usize;
 }
 
 #[derive(Clone, Copy, Debug, Archive, Serialize)]
@@ -214,6 +217,12 @@ impl<T, C: Config> Rofs<T, C> {
 
     #[inline]
     fn node_to_entry(&self, node: &Node) -> Entry<'_, T> {
+        let index = self
+            .nodes
+            .element_offset(node)
+            .expect("must belong to this filesystem");
+
+        let inode = (index as u64).wrapping_sub(C::INODE_ROOT);
         let name = self.node_to_name(node);
 
         let kind = match node.content {
@@ -236,7 +245,7 @@ impl<T, C: Config> Rofs<T, C> {
             }
         };
 
-        Entry { kind, name }
+        Entry { inode, kind, name }
     }
 
     #[inline]
@@ -363,6 +372,12 @@ where
 {
     #[inline]
     fn node_to_entry(&self, node: &ArchivedNode) -> Entry<'_, T::Archived> {
+        let index = self
+            .nodes
+            .element_offset(node)
+            .expect("must belong to this filesystem");
+
+        let inode = (index as u64).wrapping_sub(C::INODE_ROOT);
         let name = self.node_to_name(node);
 
         let kind = match node.content {
@@ -385,7 +400,7 @@ where
             }
         };
 
-        Entry { name, kind }
+        Entry { inode, name, kind }
     }
 
     #[inline]
@@ -488,6 +503,11 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<T, C> {
             None => Err(RofsError::NotFound),
         }
     }
+
+    #[inline]
+    fn file_count(&self) -> usize {
+        self.files.len()
+    }
 }
 
 impl<T, C: Config> ReadOnlyFilesystem for ArchivedRofs<T, C>
@@ -524,6 +544,11 @@ where
             Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
             None => Err(RofsError::NotFound),
         }
+    }
+
+    #[inline]
+    fn file_count(&self) -> usize {
+        self.files.len()
     }
 }
 
