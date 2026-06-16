@@ -6,6 +6,8 @@ This is a work in progress, the CLI is unstable and file integrity is on a best 
 
 ## Requirements
 
+A x86-64-v3 capable CPU (AVX2 and BMI2 ISAs). This requirement may be relaxed in the future as it is purely for performance.
+
 ### Linux
 
 Kernel with [FUSE](https://www.kernel.org/doc/html/next/filesystems/fuse.html) support. fsvfs fully relies on [fuser](https://crates.io/crates/fuser/0.17.0) to handle the kernel communication, see its README for more info.
