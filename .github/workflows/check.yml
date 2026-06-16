@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  check:
     strategy:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
@@ -41,7 +41,9 @@ jobs:
       run: cargo fmt --check --all
 
     - name: Run clippy
+      if: ${{ !cancelled() }}
       run: cargo clippy --target ${{ matrix.target }}
       
     - name: Run tests
+      if: ${{ !cancelled() }}
       run: cargo test --target ${{ matrix.target }} --verbose
