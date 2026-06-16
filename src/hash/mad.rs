@@ -13,9 +13,9 @@ where
     T: MadHash<N> + Copy + From<u8>,
 {
     let mut hash = init;
-    let mut chunks = bytes.chunks_exact(N);
+    let (chunks, remainder) = bytes.as_chunks::<N>();
 
-    for chunk in chunks.by_ref() {
+    for chunk in chunks {
         let dot_product = (0..N).fold(T::from(0), |dot, i| {
             let val = T::from(normalize(chunk[i])).wrapping_mul(T::POWERS[i]);
             T::wrapping_add(dot, val)
@@ -24,7 +24,7 @@ where
         hash = hash.wrapping_mul(T::POWERN).wrapping_add(dot_product);
     }
 
-    for b in chunks.remainder() {
+    for b in remainder {
         hash = hash
             .wrapping_mul(T::PRIME)
             .wrapping_add(T::from(normalize(*b)));
