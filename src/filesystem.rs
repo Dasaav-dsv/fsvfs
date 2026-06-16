@@ -158,7 +158,7 @@ impl<T, C: Config> Rofs<T, C> {
 
         assert_u32(total);
 
-        let root = FxHashMap::from_iter([(".", TreeNode::Branch(root))]);
+        let root = FxHashMap::from_iter([("", TreeNode::Branch(root))]);
 
         let mut nodes = Vec::<Node>::with_capacity(total);
 
