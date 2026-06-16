@@ -18,9 +18,11 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            exe: fsvfs
             archive: fsvfs-linux-amd64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            exe: fsvfs.exe
             archive: fsvfs-windows-amd64.zip
     runs-on: ${{ matrix.os }}
     steps:
@@ -43,7 +45,7 @@ jobs:
       - name: Archive
         run: |
           cd target/release
-          tar cafv ${{ matrix.archive }} ../../dist fsvfs
+          tar cafv ${{ matrix.archive }} ../../dist ${{ matrix.exe }}
 
       - name: Configure git
         run: |
