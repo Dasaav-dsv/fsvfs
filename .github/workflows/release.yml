@@ -38,13 +38,15 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Archive
         run: |
-          cp target/release/${{ matrix.exe }} ${{ matrix.exe }}
+          cp target/${{ matrix.target }}/release/${{ matrix.exe }} ${{ matrix.exe }}
           tar cafv ${{ matrix.archive }} dist ${{ matrix.exe }}
 
       - name: Configure git
