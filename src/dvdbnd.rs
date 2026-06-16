@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    env,
     ffi::OsStr,
     fs::{self, DirEntry},
     io, iter,
@@ -53,13 +54,39 @@ pub fn mount(
 }
 
 pub fn mount_from_args(args: DvdbndArgs) -> eyre::Result<()> {
+    let app_dir = app_dir();
+    tracing::debug!(?app_dir);
+
+    let keys_dir = args
+        .keys
+        .as_deref()
+        .map_or_else(|| app_dir.join("dvdbnd/Key"), PathBuf::from);
+
+    let dict_dir = args
+        .dict
+        .as_deref()
+        .map_or_else(|| app_dir.join("dvdbnd/Hash"), PathBuf::from);
+
+    tracing::info!(?keys_dir, ?dict_dir);
+
     mount(
         &args.mountpoint,
         &args.archive,
         args.game.as_deref(),
-        args.keys.as_deref().unwrap_or("dvdbnd/Key").as_ref(),
-        args.dict.as_deref().unwrap_or("dvdbnd/Hash").as_ref(),
+        &keys_dir,
+        &dict_dir,
     )
+}
+
+fn app_dir() -> PathBuf {
+    if let Some(mut path) = env::args_os().next().map(PathBuf::from)
+        && path.pop()
+    {
+        path
+    } else {
+        tracing::warn!("argv[0] is not set?");
+        PathBuf::from(".")
+    }
 }
 
 fn recursive_read_files(

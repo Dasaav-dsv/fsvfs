@@ -46,8 +46,9 @@ jobs:
 
       - name: Archive
         run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.exe }} ${{ matrix.exe }}
-          tar cafv ${{ matrix.archive }} dist ${{ matrix.exe }}
+          mv dist fsvfs
+          cp target/${{ matrix.target }}/release/${{ matrix.exe }} fsvfs/${{ matrix.exe }}
+          tar cafv ${{ matrix.archive }} fsvfs/*
 
       - name: Configure git
         run: |
