@@ -44,8 +44,8 @@ jobs:
 
       - name: Archive
         run: |
-          cd target/release
-          tar cafv ${{ matrix.archive }} ../../dist ${{ matrix.exe }}
+          cp target/release/${{ matrix.exe }} ${{ matrix.exe }}
+          tar cafv ${{ matrix.archive }} dist ${{ matrix.exe }}
 
       - name: Configure git
         run: |
@@ -56,5 +56,5 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
-          files: target/release/${{ matrix.archive }}
+          files: ${{ matrix.archive }}
 
