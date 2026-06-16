@@ -51,6 +51,7 @@ tempfile = { version = "3.27.0", default-features = false }
 windows = { version = "0.62.2", features = [
     "Win32_Storage_FileSystem",
     "Win32_Storage_ProjectedFileSystem",
+    "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ] }

@@ -20,6 +20,8 @@ mod runas;
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
 
+    let _ = enable_ansi_console();
+
     tracing_subscriber::fmt()
         .with_ansi(true)
         .without_time()
@@ -31,6 +33,28 @@ fn main() -> eyre::Result<()> {
     match cli.command {
         Command::Dvdbnd(args) => dvdbnd::mount_from_args(args),
     }
+}
+
+fn enable_ansi_console() -> color_eyre::Result<()> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Console::{
+            ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode,
+            GetStdHandle, STD_OUTPUT_HANDLE, SetConsoleMode,
+        };
+
+        let console = GetStdHandle(STD_OUTPUT_HANDLE)?;
+
+        let mut mode = ENABLE_PROCESSED_OUTPUT;
+        GetConsoleMode(console, &mut mode)?;
+
+        SetConsoleMode(
+            console,
+            mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+        )?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
