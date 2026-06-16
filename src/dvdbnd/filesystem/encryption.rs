@@ -72,7 +72,7 @@ enum Pos {
 pub trait EncryptionStore {
     async fn decrypt<'a>(
         &'a self,
-        index: EncryptionId,
+        id: EncryptionId,
         ciphertext: Ciphertext<'a>,
     ) -> Result<(), DecryptError>;
 }

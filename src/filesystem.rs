@@ -1,13 +1,6 @@
 use std::{
-    borrow::Cow,
-    collections::VecDeque,
-    fmt,
-    hint::cold_path,
-    iter::Peekable,
-    marker::PhantomData,
-    mem,
-    num::NonZero,
-    ops::{Bound, Range, RangeBounds},
+    borrow::Cow, collections::VecDeque, fmt, hint::cold_path, iter::Peekable, marker::PhantomData,
+    mem, num::NonZero,
 };
 
 use eytzinger::{SliceExt, permutation::InplacePermutator};
@@ -40,8 +33,13 @@ pub struct Rofs<T, C: Config = DefaultConfig> {
 }
 
 #[derive(Debug)]
-pub enum Entry<'a, T> {
-    Dir(Range<u64>),
+pub struct Entry<'a, T> {
+    pub name: &'a str,
+    pub kind: EntryKind<'a, T>,
+}
+
+pub enum EntryKind<'a, T> {
+    Dir(Box<dyn ExactSizeIterator<Item = Entry<'a, T>> + 'a>),
     File(&'a T),
 }
 
@@ -62,18 +60,9 @@ pub trait ReadOnlyFilesystem {
 
     fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError>;
 
-    #[cfg_attr(all(unix, not(test)), expect(unused))]
     fn lookup(&self, path: &str) -> Result<u64, RofsError>;
 
     fn lookup_in_dir(&self, parent_inode: u64, path: &str) -> Result<u64, RofsError>;
-
-    #[cfg_attr(windows, expect(unused))]
-    fn entry_iter<R>(
-        &self,
-        range: R,
-    ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
-    where
-        R: RangeBounds<u64>;
 }
 
 #[derive(Clone, Copy, Debug, Archive, Serialize)]
@@ -225,19 +214,46 @@ impl<T, C: Config> Rofs<T, C> {
 
     #[inline]
     fn node_to_entry(&self, node: &Node) -> Entry<'_, T> {
-        match node.content {
+        let name = self.node_to_name(node);
+
+        let kind = match node.content {
             NodeContent::Dir {
                 child_index,
                 child_count,
             } => {
-                let start = (child_index.get() as u64).wrapping_add(C::INODE_ROOT);
-                let end = start.wrapping_add(child_count as u64);
-                Entry::Dir(start..end)
+                let start = child_index.get() as usize;
+                let end = start + child_count as usize;
+
+                let iter = self.nodes[start..end]
+                    .iter()
+                    .map(|node| self.node_to_entry(node));
+
+                EntryKind::Dir(Box::new(iter))
             }
             NodeContent::File { data_index } => {
                 let data_index = data_index as usize;
-                Entry::File(&self.files[data_index])
+                EntryKind::File(&self.files[data_index])
             }
+        };
+
+        Entry { kind, name }
+    }
+
+    #[inline]
+    fn node_to_name(&self, node: &Node) -> &str {
+        assert!(
+            self.nodes.as_ptr_range().contains(&&raw const *node),
+            "must belong to this filesystem",
+        );
+
+        // SAFETY: This node belongs to this filesystem, so same as in `Rofs::new`.
+        // Note this wouldn't be safe in the archived version.
+        unsafe {
+            let name = self.names.get_unchecked(node.name_index()..);
+            let (len, rest) = name.split_first().unwrap_unchecked();
+            let bytes = rest.get_unchecked(..*len as usize);
+
+            str::from_utf8_unchecked(bytes)
         }
     }
 
@@ -347,20 +363,41 @@ where
 {
     #[inline]
     fn node_to_entry(&self, node: &ArchivedNode) -> Entry<'_, T::Archived> {
-        match node.content {
+        let name = self.node_to_name(node);
+
+        let kind = match node.content {
             ArchivedNodeContent::Dir {
                 child_index,
                 child_count,
             } => {
-                let start = (child_index.get() as u64).wrapping_add(C::INODE_ROOT);
-                let end = start.wrapping_add(child_count.to_native() as u64);
-                Entry::Dir(start..end)
+                let start = child_index.get() as usize;
+                let end = start + child_count.to_native() as usize;
+
+                let iter = self.nodes[start..end]
+                    .iter()
+                    .map(|node| self.node_to_entry(node));
+
+                EntryKind::Dir(Box::new(iter))
             }
             ArchivedNodeContent::File { data_index } => {
                 let data_index = data_index.to_native() as usize;
-                Entry::File(&self.files[data_index])
+                EntryKind::File(&self.files[data_index])
             }
-        }
+        };
+
+        Entry { name, kind }
+    }
+
+    #[inline]
+    #[track_caller]
+    fn node_to_name(&self, node: &ArchivedNode) -> &str {
+        let name_index = node.name_index.to_native() as usize;
+
+        let name = &self.names[name_index..];
+        let (len, rest) = name.split_first().unwrap();
+        let bytes = &rest[..*len as usize];
+
+        str::from_utf8(bytes).expect("must be valid UTF-8")
     }
 
     #[inline]
@@ -426,16 +463,7 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<T, C> {
     fn name(&self, inode: u64) -> Result<&str, RofsError> {
         let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
         let node = self.nodes.get(index).ok_or(RofsError::NotFound)?;
-
-        // SAFETY: same as in `Rofs::new`.
-        // Note this wouldn't be safe in the archived version.
-        unsafe {
-            let name = self.names.get_unchecked(node.name_index()..);
-            let (len, rest) = name.split_first().unwrap_unchecked();
-            let bytes = rest.get_unchecked(..*len as usize);
-
-            Ok(str::from_utf8_unchecked(bytes))
-        }
+        Ok(self.node_to_name(node))
     }
 
     #[inline]
@@ -460,19 +488,6 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<T, C> {
             None => Err(RofsError::NotFound),
         }
     }
-
-    #[inline]
-    fn entry_iter<R>(
-        &self,
-        range: R,
-    ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
-    where
-        R: RangeBounds<u64>,
-    {
-        let range = map_range(range, C::INODE_ROOT);
-        let nodes = self.nodes.get(range).ok_or(RofsError::NotFound)?;
-        Ok(nodes.iter().map(|node| self.node_to_entry(node)))
-    }
 }
 
 impl<T, C: Config> ReadOnlyFilesystem for ArchivedRofs<T, C>
@@ -485,13 +500,7 @@ where
     fn name(&self, inode: u64) -> Result<&str, RofsError> {
         let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
         let node = (*self.nodes).get(index).ok_or(RofsError::NotFound)?;
-        let name_index = node.name_index.to_native() as usize;
-
-        let name = &self.names[name_index..];
-        let (len, rest) = name.split_first().unwrap();
-        let bytes = &rest[..*len as usize];
-
-        Ok(str::from_utf8(bytes).unwrap())
+        Ok(self.node_to_name(node))
     }
 
     #[inline]
@@ -515,19 +524,6 @@ where
             Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
             None => Err(RofsError::NotFound),
         }
-    }
-
-    #[inline]
-    fn entry_iter<R>(
-        &self,
-        range: R,
-    ) -> Result<impl ExactSizeIterator<Item = Entry<'_, Self::File>>, RofsError>
-    where
-        R: RangeBounds<u64>,
-    {
-        let range = map_range(range, C::INODE_ROOT);
-        let nodes = (*self.nodes).get(range).ok_or(RofsError::NotFound)?;
-        Ok(nodes.iter().map(|node| self.node_to_entry(node)))
     }
 }
 
@@ -560,22 +556,6 @@ fn normalize_path<C: Config>(path: &str) -> Cow<'_, str> {
     }
 }
 
-#[track_caller]
-fn map_range<R>(range: R, root: u64) -> (Bound<usize>, Bound<usize>)
-where
-    R: RangeBounds<u64>,
-{
-    let start = range
-        .start_bound()
-        .map(|start| usize::try_from(start.wrapping_sub(root)).expect("index too large"));
-
-    let end = range
-        .end_bound()
-        .map(|end| usize::try_from(end.wrapping_sub(root)).expect("index too large"));
-
-    (start, end)
-}
-
 impl<T> Default for RofsBuilder<'_, T> {
     fn default() -> Self {
         Self::new()
@@ -592,12 +572,21 @@ impl<T: fmt::Debug, C: Config> fmt::Debug for Rofs<T, C> {
     }
 }
 
+impl<T: fmt::Debug> fmt::Debug for EntryKind<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Dir(_) => f.debug_tuple("EntryKind::Dir").finish_non_exhaustive(),
+            Self::File(file) => f.debug_tuple("EntryKind::File").field(file).finish(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fmt, fs, sync::LazyLock};
 
     use crate::{
-        filesystem::{Config, Entry, ReadOnlyFilesystem, Rofs, RofsBuilder},
+        filesystem::{Config, EntryKind, ReadOnlyFilesystem, Rofs, RofsBuilder},
         hash::hash_path32,
     };
 
@@ -651,7 +640,7 @@ mod tests {
     {
         for &path in paths {
             let inode = f.lookup(path).unwrap();
-            let Entry::File(&hash) = f.entry(inode).unwrap() else {
+            let EntryKind::File(&hash) = f.entry(inode).unwrap().kind else {
                 panic!("not a file");
             };
 

@@ -4,7 +4,6 @@ use std::{
     fs,
     io::Write,
     mem::{self, ManuallyDrop},
-    ops::Range,
     os::windows::fs::OpenOptionsExt,
     panic::{self, AssertUnwindSafe},
     sync::{
@@ -48,7 +47,7 @@ use crate::{
         filesystem::DvdbndFilesystem,
         mount::{DvdbndFile, DvdbndMount},
     },
-    filesystem::{Entry, ReadOnlyFilesystem, RofsError},
+    filesystem::{Entry, EntryKind, ReadOnlyFilesystem, RofsError},
     runas::runas_powershell_command,
     thread::{OnInterrupt, run_until_interrupted},
 };
@@ -65,7 +64,7 @@ struct MountContext<F: DvdbndFilesystem> {
 #[derive(Debug)]
 struct DirEnumeration {
     pos: AtomicUsize,
-    index: Box<[(usize, u64)]>,
+    index: Box<[(usize, PRJ_FILE_BASIC_INFO)]>,
     store: Box<[u16]>,
 }
 
@@ -89,19 +88,6 @@ where
         run_until_interrupted(mount)?;
 
         Ok(())
-    }
-
-    fn file_basic_info<T: DvdbndFile>(&self, entry: &Entry<'_, T>) -> PRJ_FILE_BASIC_INFO {
-        let (is_dir, file_size) = match entry {
-            Entry::Dir(_) => (true, 0),
-            Entry::File(file) => (false, file.unpadded_len()),
-        };
-
-        PRJ_FILE_BASIC_INFO {
-            IsDirectory: is_dir,
-            FileSize: file_size.into(),
-            ..Default::default()
-        }
     }
 }
 
@@ -172,11 +158,15 @@ where
                 return Err(ERROR_FILE_NOT_FOUND.into());
             };
 
-            let Ok(Entry::Dir(inode_range)) = fs.entry(inode) else {
+            let Ok(Entry {
+                kind: EntryKind::Dir(dir_iter),
+                ..
+            }) = fs.entry(inode)
+            else {
                 return Err(ERROR_DIRECTORY.into());
             };
 
-            let Ok(enumeration) = DirEnumeration::from_inode_range(inode_range, fs) else {
+            let Ok(enumeration) = DirEnumeration::from_dir_iter(dir_iter) else {
                 return Err(ERROR_DIRECTORY.into());
             };
 
@@ -220,23 +210,11 @@ where
                 dir.reset();
             }
 
-            let fs = context.mount.fs.as_rofs();
-
             let start_pos = dir.pos();
             let mut end_pos = start_pos;
 
-            for (pos, (path, inode)) in dir.enumerate(searchexpression) {
-                let Ok(entry) = fs.entry(inode) else {
-                    return Err(E_FAIL.into());
-                };
-
-                let res = unsafe {
-                    PrjFillDirEntryBuffer(
-                        path,
-                        Some(&context.mount.file_basic_info(&entry)),
-                        direntrybufferhandle,
-                    )
-                };
+            for (pos, (name, info)) in dir.enumerate(searchexpression) {
+                let res = unsafe { PrjFillDirEntryBuffer(name, Some(info), direntrybufferhandle) };
 
                 if let Err(e) = res {
                     match e.code() {
@@ -268,7 +246,7 @@ where
             };
 
             let placeholder_info = PRJ_PLACEHOLDER_INFO {
-                FileBasicInfo: context.mount.file_basic_info(&entry),
+                FileBasicInfo: file_basic_info(&entry),
                 ..Default::default()
             };
 
@@ -460,19 +438,20 @@ where
 }
 
 impl DirEnumeration {
-    fn from_inode_range<F: ReadOnlyFilesystem>(
-        inodes: Range<u64>,
-        fs: &F,
-    ) -> Result<Self, RofsError> {
-        let len = inodes.clone().count();
+    fn from_dir_iter<'a, T>(
+        dir_iter: Box<dyn ExactSizeIterator<Item = Entry<'a, T>> + 'a>,
+    ) -> Result<Self, RofsError>
+    where
+        T: DvdbndFile,
+    {
+        let len = dir_iter.len();
 
         let mut index = Vec::with_capacity(len);
         let mut store = Vec::with_capacity(len * 32);
 
-        for inode in inodes {
-            let name = fs.name(inode)?;
-            index.push((store.len(), inode));
-            store.extend(name.encode_utf16().chain([0]));
+        for entry in dir_iter {
+            index.push((store.len(), file_basic_info(&entry)));
+            store.extend(entry.name.encode_utf16().chain([0]));
         }
 
         index.sort_unstable_by(|(a, _), (b, _)| unsafe {
@@ -488,18 +467,21 @@ impl DirEnumeration {
         })
     }
 
-    fn enumerate(&self, expression: PCWSTR) -> impl Iterator<Item = (usize, (PCWSTR, u64))> {
+    fn enumerate(
+        &self,
+        expression: PCWSTR,
+    ) -> impl Iterator<Item = (usize, (PCWSTR, &PRJ_FILE_BASIC_INFO))> {
         let pos = self.pos();
 
         self.index
             .iter()
             .enumerate()
             .skip(pos)
-            .filter_map(move |(pos, (path_index, inode))| {
+            .filter_map(move |(pos, (path_index, info))| {
                 let path = PCWSTR(self.store[*path_index..].as_ptr());
 
                 if expression.is_null() || unsafe { PrjFileNameMatch(path, expression) } {
-                    Some((pos, (path, *inode)))
+                    Some((pos, (path, info)))
                 } else {
                     None
                 }
@@ -517,6 +499,19 @@ impl DirEnumeration {
 
     fn reset(&self) {
         self.pos.store(0, Ordering::Release);
+    }
+}
+
+fn file_basic_info<T: DvdbndFile>(entry: &Entry<'_, T>) -> PRJ_FILE_BASIC_INFO {
+    let (is_dir, file_size) = match &entry.kind {
+        EntryKind::Dir(_) => (true, 0),
+        EntryKind::File(file) => (false, file.unpadded_len()),
+    };
+
+    PRJ_FILE_BASIC_INFO {
+        IsDirectory: is_dir,
+        FileSize: file_size.into(),
+        ..Default::default()
     }
 }
 

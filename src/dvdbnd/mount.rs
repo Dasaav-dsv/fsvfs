@@ -20,7 +20,7 @@ use crate::{
         },
         keys::Keys,
     },
-    filesystem::{Entry, ReadOnlyFilesystem, RofsError},
+    filesystem::{Entry, EntryKind, ReadOnlyFilesystem, RofsError},
     time::time,
 };
 
@@ -139,7 +139,10 @@ where
         let fs = self.fs.as_rofs();
 
         let file = match fs.entry(inode) {
-            Ok(Entry::File(file)) => file,
+            Ok(Entry {
+                kind: EntryKind::File(file),
+                ..
+            }) => file,
             Ok(_) => return Err(RofsError::IsDir.into()),
             Err(e) => return Err(e.into()),
         };
