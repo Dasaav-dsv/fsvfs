@@ -25,7 +25,7 @@ fn main() -> eyre::Result<()> {
         .without_time()
         .init();
 
-    let cli = Cli::try_parse()?;
+    let cli = Cli::parse();
     debug!("parsed CLI: {cli:?}");
 
     match cli.command {
