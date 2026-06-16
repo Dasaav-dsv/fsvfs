@@ -1,4 +1,4 @@
-# fsvfs - mount FromSoftware virtual filesystem
+# fsvfs - mount FromSoftware virtual filesystems
 
 Access archived game files (Dark Souls, Armored Core, Elden Ring...) with this cross platform userspace filesystem framework without needing to unpack and store tens of gigabytes of (duplicate) data.
 
