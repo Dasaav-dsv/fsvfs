@@ -8,40 +8,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create:
+  release-linux:
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Create release
-        id: create
-        uses: softprops/action-gh-release@v3
-        with:
-          name: ${{ github.ref_name }}
-          prerelease: false
-          make_latest: true
-          generate_release_notes: false
-
-  build:
-    needs: create
     permissions:
       contents: write
     strategy:
       matrix:
-        os: [ ubuntu-latest, windows-latest ]
-    runs-on: ${{ matrix.os }}
+        vars:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: fsvfs-linux-amd64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: fsvfs-windows-amd64.zip
+    runs-on: ${{ vars.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           submodules: true
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ vars.target }}
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
       - name: Build
         run: cargo build --release
+
+      - name: Archive
+        run: |
+          cd target/release
+          tar cafv ${{ vars.archive }} ../../dist fsvfs
 
       - name: Configure git
         run: |
@@ -52,8 +53,5 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
-          fail_on_unmatched_files: false
-          files: |
-            dist
-            target/release/fsvfs
-            target/release/fsvfs.exe
+          files: target/release/${{ vars.archive }}
+
