@@ -441,7 +441,7 @@ where
 }
 
 impl DirEnumeration {
-    fn from_dir_iter<'a, T>(
+    fn from_dir_iter<'a>(
         dir_iter: Box<dyn ExactSizeIterator<Item = Entry<'a, DvdbndFile>> + 'a>,
     ) -> Result<Self, RofsError> {
         let len = dir_iter.len();

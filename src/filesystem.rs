@@ -385,25 +385,13 @@ mod tests {
             .map(|path| fs::read_to_string(path).unwrap())
             .collect::<Vec<_>>();
 
-            let fs = files
+            files
                 .iter()
                 .map(|file| {
                     RofsObject::new(file.lines().map(|path| (path, hash_path32(path).unwrap())))
                 })
                 .fold(RofsObject::default(), RofsObject::merge)
-                .into_rofs();
-
-            fs::write(
-                "out.txt",
-                fs.nodes
-                    .iter()
-                    .map(|node| fs.node_name(node))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-            .unwrap();
-
-            fs
+                .into_rofs()
         });
 
         &FS
