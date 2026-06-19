@@ -3,18 +3,23 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     hash::{BuildHasherDefault, Hasher},
+    mem,
     num::NonZero,
+    sync::Arc,
 };
 
 use color_eyre::eyre;
-use fxhash::{FxBuildHasher, FxHashMap};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use fxhash::FxHashMap;
+use rayon::iter::{
+    IntoParallelIterator, IntoParallelRefIterator, ParallelExtend, ParallelIterator,
+};
 use rkyv::{Archive, Deserialize, Portable, Serialize};
 
 use crate::{
+    cache::Cache,
     dvdbnd::{
         bhd5::{
-            self, Bhd5File, Bhd5FileKind, ByteOrderExt,
+            self, Bhd5File, ByteOrderExt,
             format::{Buckets, Encryption, FileEntry as Bhd5Entry},
         },
         dict::Dictionary,
@@ -56,16 +61,20 @@ pub struct SrcIdHasher(u64);
 
 pub type SrcIdMap<V> = HashMap<SrcId, V, BuildHasherDefault<SrcIdHasher>>;
 
+pub type DvdbndRofsCached = (RofsObject<DvdbndFile, DvdbndConfig>, Arc<[u8]>);
+
 #[derive(Debug)]
 pub struct DvdbndRofs {
     inner: Rofs<DvdbndFile, DvdbndConfig>,
-    encryption_store: SrcIdMap<Box<[u8]>>,
+    encryption_store: SrcIdMap<Arc<[u8]>>,
 }
 
-#[derive(Debug)]
+#[derive(Default)]
 pub struct DvdbndRofsBuilder<'a, 'b, 'c> {
-    bhds: FxHashMap<&'a BhdPath, Bhd5File<'b>>,
+    bhds: FxHashMap<&'a BhdPath, (Bhd5File<'b>, SrcId)>,
     dict: Option<&'c Dictionary>,
+    cache: Cache,
+    cached: Vec<(SrcId, DvdbndRofsCached)>,
 }
 
 #[derive(Clone, Copy, Debug, Archive, Serialize, Deserialize)]
@@ -78,18 +87,11 @@ pub struct DvdbndFile {
 }
 
 #[derive(Debug)]
-struct DvdbndConfig;
+pub struct DvdbndConfig;
 
 type ProcessedBhd<'a> = Vec<(Cow<'a, str>, DvdbndFile)>;
 
 impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
-    pub const fn new() -> Self {
-        Self {
-            bhds: FxHashMap::with_hasher(FxBuildHasher::new()),
-            dict: None,
-        }
-    }
-
     pub fn with_dict(&mut self, dict: Option<&'c Dictionary>) -> &mut Self {
         self.dict = dict;
         self
@@ -97,32 +99,59 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
 
     pub fn with_bhds<I>(&mut self, iter: I) -> &mut Self
     where
-        I: IntoIterator<Item = (&'a BhdPath, Bhd5File<'b>)>,
+        I: IntoIterator<Item = (&'a BhdPath, (Bhd5File<'b>, SrcId))>,
     {
         self.bhds.extend(iter);
         self
     }
 
+    pub fn with_cached(
+        &mut self,
+        cache: Cache,
+        cached: Vec<(SrcId, DvdbndRofsCached)>,
+    ) -> &mut Self {
+        self.cache = cache;
+        self.cached = cached;
+        self
+    }
+
     pub fn finish(&mut self) -> eyre::Result<DvdbndRofs> {
+        let (mut obj, mut encryption_store): (SrcIdMap<_>, SrcIdMap<_>) =
+            mem::take(&mut self.cached)
+                .into_iter()
+                .map(|(src_id, (obj, store))| ((src_id, obj), (src_id, store)))
+                .unzip();
+
         let files = self
             .bhds
             .par_iter()
-            .map(|(&name, bhd)| match &bhd.kind {
-                Bhd5FileKind::LE(kind) => self.process_bhd(kind, name, bhd.hash),
-                Bhd5FileKind::BE(kind) => self.process_bhd(kind, name, bhd.hash),
+            .map(|(&name, (bhd, src_id))| match bhd {
+                Bhd5File::LE(kind) => self.process_bhd(kind, name, *src_id),
+                Bhd5File::BE(kind) => self.process_bhd(kind, name, *src_id),
             })
             .collect::<eyre::Result<Vec<_>>>()?;
 
-        let inner = files
-            .par_iter()
-            .map(|(files, _, _)| RofsObject::new(files.iter().map(|(path, file)| (path, *file))))
+        encryption_store.par_extend(
+            files
+                .par_iter()
+                .map(|(_, store, src_id)| (*src_id, Arc::from(&**store))),
+        );
+
+        obj.par_extend(files.par_iter().map(|(files, _, src_id)| {
+            let obj = RofsObject::new(files.iter().map(|(path, file)| (path, *file)));
+            let store = encryption_store[src_id].clone();
+
+            let value = (obj, store);
+            self.cache.put("dvdbnd.rofs", src_id.as_ref(), &value);
+
+            (*src_id, value.0)
+        }));
+
+        let inner = obj
+            .into_par_iter()
+            .map(|(_, obj)| obj)
             .reduce(RofsObject::<_, DvdbndConfig>::default, RofsObject::merge)
             .into_rofs();
-
-        let encryption_store = files
-            .into_iter()
-            .map(|(_, store, src_id)| (src_id, store.into_boxed_slice()))
-            .collect::<SrcIdMap<_>>();
 
         Ok(DvdbndRofs {
             inner,
@@ -134,7 +163,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
         &self,
         bhd: &bhd5::format::File<'_, O>,
         path: &BhdPath,
-        hash: u128,
+        src_id: SrcId,
     ) -> eyre::Result<(ProcessedBhd<'c>, Vec<u8>, SrcId)> {
         let name = path
             .file_prefix()
@@ -144,10 +173,10 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
         let encryption = &bhd.encryption;
 
         match &bhd.buckets {
-            Buckets::DarkSouls(e) => self.process_files(e, name, hash, encryption),
-            Buckets::DarkSouls2(e) => self.process_files(e, name, hash, encryption),
-            Buckets::DarkSouls3(e) => self.process_files(e, name, hash, encryption),
-            Buckets::EldenRing(e) => self.process_files(e, name, hash, encryption),
+            Buckets::DarkSouls(e) => self.process_files(e, name, src_id, encryption),
+            Buckets::DarkSouls2(e) => self.process_files(e, name, src_id, encryption),
+            Buckets::DarkSouls3(e) => self.process_files(e, name, src_id, encryption),
+            Buckets::EldenRing(e) => self.process_files(e, name, src_id, encryption),
         }
     }
 
@@ -155,7 +184,7 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
         &self,
         entries: &[&[E]],
         name: &str,
-        hash: u128,
+        src_id: SrcId,
         encryption: &[Option<&Encryption<O>>],
     ) -> eyre::Result<(ProcessedBhd<'c>, Vec<u8>, SrcId)>
     where
@@ -172,7 +201,6 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
             true => Hashes::U64(dict.hash_paths64(name)),
         });
 
-        let src_id = SrcId::from(hash);
         let mut encryption_store = vec![];
 
         let files = entries
@@ -223,12 +251,6 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
     }
 }
 
-impl Default for DvdbndRofsBuilder<'_, '_, '_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl DvdbndFilesystem for DvdbndRofs {
     #[inline]
     fn as_rofs(&self) -> &impl ReadOnlyFilesystem<File = DvdbndFile> {
@@ -244,6 +266,12 @@ impl DvdbndFilesystem for DvdbndRofs {
 impl From<u128> for SrcId {
     fn from(value: u128) -> Self {
         Self(*value.to_be_bytes()[..12].as_array().unwrap())
+    }
+}
+
+impl AsRef<[u8; 12]> for SrcId {
+    fn as_ref(&self) -> &[u8; 12] {
+        &self.0
     }
 }
 

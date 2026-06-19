@@ -25,7 +25,9 @@ eytzinger = { version = "1.1.2", default-features = false, features = [
 ] }
 futures-util = "0.3.32"
 fxhash = "0.2.1"
+heed = { version = "0.22.1", default-features = false }
 indexmap = "2.14.0"
+lz4_flex = { version = "0.13.1", default-features = false, features = ["checked-decode", "safe-decode", "std"] }
 malachite = { version = "0.9.1", default-features = false, features = [
     "malachite-nz",
     "naturals_and_integers",

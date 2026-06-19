@@ -6,16 +6,19 @@ use futures_util::TryStreamExt;
 use fxhash::{FxBuildHasher, FxHashMap};
 use rayon::{
     ThreadPoolBuilder,
-    iter::{IntoParallelRefIterator, ParallelIterator},
+    iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator},
 };
 use tracing::info;
+use xxhash_rust::{const_xxh3, xxh3::xxh3_128_with_seed};
 
 use crate::{
+    cache::Cache,
     dvdbnd::{
         bhd5::Bhd5File,
         dict::Dictionary,
         filesystem::{
-            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, SrcId, SrcIdMap, aligned,
+            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, DvdbndRofsCached, SrcId,
+            SrcIdMap, aligned,
             encryption::{BLOCK_SIZE, Ciphertext, CiphertextBuffer, EncryptionId, EncryptionStore},
         },
         keys::Keys,
@@ -49,50 +52,70 @@ struct Bdt {
 }
 
 impl DvdbndMount<DvdbndRofs> {
-    pub fn from_keys_and_dict(keys: &Keys<'_>, dict: Option<&Dictionary>) -> eyre::Result<Self> {
+    pub fn from_keys_and_dict(
+        keys: &Keys<'_>,
+        dict: Option<&Dictionary>,
+        cache: Cache,
+    ) -> eyre::Result<Self> {
         let thread_pool = ThreadPoolBuilder::new().use_current_thread().build()?;
         thread_pool.in_place_scope_fifo(|_| -> eyre::Result<Self> {
-            let files = time!(
+            let mut files = time!(
                 keys.by_path
                     .par_iter()
                     .map(|(&path, key)| {
-                        let mut bytes = fs::read(path)?;
+                        let bytes = fs::read(path)?;
 
-                        if let Some(key) = key {
-                            let len = key.decrypt_blocks_in_place(&mut bytes)?;
-                            bytes.truncate(len);
-                        }
+                        const SEED: u64 = const_xxh3::xxh3_64(env!("CARGO_PKG_VERSION").as_bytes());
+                        let src_id = SrcId::from(xxh3_128_with_seed(&bytes, SEED));
 
-                        Ok((path, bytes))
+                        Ok((path, bytes, src_id, key))
                     })
                     .collect::<eyre::Result<Vec<_>>>()?,
-                |t| info!("decrypted BHD5 files ({t:.02?})"),
+                |t| info!("read BHD5 files ({t:.02?})"),
             );
 
-            let bhds = time!(
-                files
-                    .par_iter()
-                    .map(|(path, bytes)| {
-                        let file = Bhd5File::try_ref_from_bytes(bytes)?;
-                        Ok((*path, file))
-                    })
-                    .collect::<eyre::Result<Vec<_>>>()?,
-                |t| info!("parsed BHD5 files ({t:.02?})")
-            );
-
-            let bdts = bhds
+            let bdts = files
                 .iter()
-                .map(|(path, bhd)| {
+                .map(|(path, _, src_id, _)| {
                     let bdt = Bdt::new(path.to_bdt())?;
-                    Ok((SrcId::from(bhd.hash), bdt))
+                    Ok((*src_id, bdt))
                 })
                 .collect::<io::Result<SrcIdMap<_>>>()
                 .map(BdtTls)?;
 
+            let mut cached = Vec::with_capacity(files.len());
+
+            files.retain(|(_, _, src_id, _)| {
+                match cache.get::<DvdbndRofsCached>("dvdbnd.rofs", src_id.as_ref()) {
+                    Some(cache) => {
+                        cached.push((*src_id, cache));
+                        false
+                    }
+                    None => true,
+                }
+            });
+
+            let bhds = time!(
+                files
+                    .par_iter_mut()
+                    .map(|(path, bytes, src_id, key)| {
+                        if let Some(key) = key {
+                            let len = key.decrypt_blocks_in_place(bytes)?;
+                            bytes.truncate(len);
+                        }
+
+                        let file = Bhd5File::try_ref_from_bytes(bytes)?;
+                        Ok((*path, (file, *src_id)))
+                    })
+                    .collect::<eyre::Result<Vec<_>>>()?,
+                |t| info!("decrypted and parsed BHD5 files ({t:.02?})")
+            );
+
             let fs = time!(
-                DvdbndRofsBuilder::new()
+                DvdbndRofsBuilder::default()
                     .with_bhds(bhds)
                     .with_dict(dict)
+                    .with_cached(cache, cached)
                     .finish()?,
                 |t| info!("built dvdbnd read-only filesystem ({t:.02?})"),
             );
