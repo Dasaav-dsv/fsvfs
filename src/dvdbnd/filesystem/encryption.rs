@@ -41,7 +41,7 @@ pub enum DecryptError {
     Id(EncryptionId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct EncryptionId(NonZero<u32>);
 
@@ -85,12 +85,6 @@ impl EncryptionId {
 
     fn into_index(self) -> usize {
         (self.0.get() ^ u32::MAX) as usize
-    }
-}
-
-impl ArchivedEncryptionId {
-    pub fn get(&self) -> EncryptionId {
-        EncryptionId(self.0.to_native())
     }
 }
 

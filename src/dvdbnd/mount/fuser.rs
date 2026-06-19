@@ -59,7 +59,7 @@ where
         Ok(())
     }
 
-    fn file_attr<T: DvdbndFile>(&self, ino: INodeNo, entry: &Entry<'_, T>) -> FileAttr {
+    fn file_attr(&self, ino: INodeNo, entry: &Entry<'_, DvdbndFile>) -> FileAttr {
         let kind = file_type(entry);
 
         let (size, blocks) = if let Entry {
