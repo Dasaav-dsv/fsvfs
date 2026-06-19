@@ -442,11 +442,8 @@ where
 
 impl DirEnumeration {
     fn from_dir_iter<'a, T>(
-        dir_iter: Box<dyn ExactSizeIterator<Item = Entry<'a, T>> + 'a>,
-    ) -> Result<Self, RofsError>
-    where
-        T: DvdbndFile,
-    {
+        dir_iter: Box<dyn ExactSizeIterator<Item = Entry<'a, DvdbndFile>> + 'a>,
+    ) -> Result<Self, RofsError> {
         let len = dir_iter.len();
 
         let mut index = Vec::with_capacity(len);
@@ -505,7 +502,7 @@ impl DirEnumeration {
     }
 }
 
-fn file_basic_info<T: DvdbndFile>(entry: &Entry<'_, T>) -> PRJ_FILE_BASIC_INFO {
+fn file_basic_info(entry: &Entry<'_, DvdbndFile>) -> PRJ_FILE_BASIC_INFO {
     let (is_dir, file_size) = match &entry.kind {
         EntryKind::Dir(_) => (true, 0),
         EntryKind::File(file) => (false, file.unpadded_len()),

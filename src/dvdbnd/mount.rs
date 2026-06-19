@@ -15,7 +15,7 @@ use crate::{
         bhd5::FileAny,
         dict::Dictionary,
         filesystem::{
-            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, aligned,
+            DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, aligned,
             encryption::{BLOCK_SIZE, Ciphertext, CiphertextBuffer, EncryptionId, EncryptionStore},
         },
         keys::Keys,
@@ -53,12 +53,11 @@ struct Bdt {
 impl DvdbndMount<DvdbndRofs> {
     pub fn from_keys_and_dict(keys: &Keys<'_>, dict: Option<&Dictionary>) -> eyre::Result<Self> {
         let thread_pool = ThreadPoolBuilder::new().use_current_thread().build()?;
-
-        let fs = thread_pool.in_place_scope_fifo(|_| -> eyre::Result<DvdbndRofs> {
+        thread_pool.in_place_scope_fifo(|_| -> eyre::Result<Self> {
             let files = time!(
                 keys.by_path
                     .par_iter()
-                    .map(|(path, key)| {
+                    .map(|(&path, key)| {
                         let mut bytes = fs::read(path)?;
 
                         if let Some(key) = key {
@@ -66,13 +65,7 @@ impl DvdbndMount<DvdbndRofs> {
                             bytes.truncate(len);
                         }
 
-                        // FIXME
-                        let name = path
-                            .file_prefix()
-                            .and_then(OsStr::to_str)
-                            .unwrap_or_default();
-
-                        Ok((name, bytes))
+                        Ok((path, bytes))
                     })
                     .collect::<eyre::Result<Vec<_>>>()?,
                 |t| info!("decrypted BHD5 files ({t:.02?})"),
@@ -81,9 +74,16 @@ impl DvdbndMount<DvdbndRofs> {
             let bhds = time!(
                 files
                     .par_iter()
-                    .map(|(name, bytes)| {
+                    .map(|(path, bytes)| {
+                        // FIXME
+                        let name = path
+                            .file_prefix()
+                            .and_then(OsStr::to_str)
+                            .unwrap_or_default();
+
                         let file = FileAny::try_ref_from_bytes(bytes)?;
-                        Ok((*name, file))
+
+                        Ok((name, file))
                     })
                     .collect::<eyre::Result<Vec<_>>>()?,
                 |t| info!("parsed BHD5 files ({t:.02?})")
@@ -97,13 +97,11 @@ impl DvdbndMount<DvdbndRofs> {
                 |t| info!("built dvdbnd read-only filesystem ({t:.02?})"),
             );
 
-            Ok(fs)
-        })?;
+            let bdts = files.iter().map(|(path, _)| path.to_bdt());
+            let mount = Self::from_fs_and_bdts(fs, bdts)?;
 
-        let bdts = keys.by_path.keys().map(|path| path.to_bdt());
-        let mount = Self::from_fs_and_bdts(fs, bdts)?;
-
-        Ok(mount)
+            Ok(mount)
+        })
     }
 }
 
@@ -181,6 +179,8 @@ where
         let bdt = self.bdts.open(file.src_index()).await?;
 
         if let Some(encryption_id) = file.encryption_id() {
+            let encryption_store = self.fs.encryption_store(file.src_index());
+
             return self
                 .read_and_decrypt_file(
                     bdt,
@@ -188,6 +188,7 @@ where
                     len,
                     file_start,
                     file_padded_len,
+                    encryption_store,
                     encryption_id,
                     f,
                 )
@@ -216,13 +217,12 @@ where
         len: u32,
         file_start: u64,
         file_padded_len: u32,
+        encryption_store: &impl EncryptionStore,
         encryption_id: EncryptionId,
         mut f: impl FnMut(&[u8], i64) -> eyre::Result<()>,
     ) -> eyre::Result<()> {
         let start = (data_start - file_start) as u32;
         let end = start + len;
-
-        let encryption_store = self.fs.encryption_store();
 
         let mut stream =
             aligned::stream_read_windows(bdt, data_start, len, file_start, file_padded_len);

@@ -1,7 +1,6 @@
 use std::{borrow::Cow, fmt, hint::cold_path, iter::Peekable, marker::PhantomData, num::NonZero};
 
 use eytzinger::SliceExt;
-use rkyv::{Archive, Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::cow::CowExt;
@@ -17,7 +16,6 @@ pub enum RofsError {
     IsDir,
 }
 
-#[derive(Archive, Serialize)]
 pub struct Rofs<T, C: Config = DefaultConfig> {
     nodes: Box<[Node]>,
     files: Box<[T]>,
@@ -61,13 +59,13 @@ pub trait ReadOnlyFilesystem {
     fn file_count(&self) -> usize;
 }
 
-#[derive(Clone, Copy, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 struct Node {
     content: NodeContent,
     name_index: u32,
 }
 
-#[derive(Clone, Copy, Debug, Archive, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 enum NodeContent {
     Dir {
         child_index: NonZero<u32>,
@@ -208,104 +206,6 @@ fn components<C: Config>(path: &str) -> Peekable<impl Iterator<Item = &str>> {
         .peekable()
 }
 
-impl<T, C: Config> ArchivedRofs<T, C>
-where
-    T: rkyv::Archive,
-{
-    #[inline]
-    fn node_entry(&self, node: &ArchivedNode) -> Entry<'_, T::Archived> {
-        let index = self
-            .nodes
-            .element_offset(node)
-            .expect("must belong to this filesystem");
-
-        let inode = (index as u64).wrapping_sub(C::INODE_ROOT);
-        let name = self.node_name(node);
-
-        let kind = match node.content {
-            ArchivedNodeContent::Dir {
-                child_index,
-                child_count,
-            } => {
-                let start = child_index.get() as usize;
-                let end = start + child_count.to_native() as usize;
-
-                let iter = self.nodes[start..end]
-                    .iter()
-                    .map(|node| self.node_entry(node));
-
-                EntryKind::Dir(Box::new(iter))
-            }
-            ArchivedNodeContent::File { data_index } => {
-                let data_index = data_index.to_native() as usize;
-                EntryKind::File(&self.files[data_index])
-            }
-        };
-
-        Entry { inode, name, kind }
-    }
-
-    #[inline]
-    #[track_caller]
-    fn node_name(&self, node: &ArchivedNode) -> &str {
-        let name_index = node.name_index.to_native() as usize;
-
-        let name = &self.names[name_index..];
-        let (len, rest) = name.split_first().unwrap();
-        let bytes = &rest[..*len as usize];
-
-        str::from_utf8(bytes).expect("must be valid UTF-8")
-    }
-
-    #[inline]
-    fn inode_by_path_ignore_ascii_case(&self, parent: u32, mut path: Cow<'_, str>) -> Option<u32> {
-        match self.inode_by_path(parent, &path) {
-            Some(inode) => Some(inode),
-            None => {
-                Cow::to_ascii_lowercase(&mut path).then(|| self.inode_by_path(parent, &path))?
-            }
-        }
-    }
-
-    #[inline]
-    fn inode_by_path(&self, parent: u32, path: &str) -> Option<u32> {
-        let mut components = components::<C>(path);
-
-        if components.peek().is_none() {
-            return Some(parent);
-        }
-
-        let mut index = parent as usize;
-
-        loop {
-            let component = components.next()?;
-
-            let &ArchivedNode {
-                content:
-                    ArchivedNodeContent::Dir {
-                        child_index,
-                        child_count,
-                    },
-                ..
-            } = (*self.nodes).get(index)?
-            else {
-                break None;
-            };
-
-            let start = child_index.get() as usize;
-            let end = start + child_count.to_native() as usize;
-
-            index = self.nodes[start..end]
-                .eytzinger_search_by_key(&component, |node| self.node_name(node))?
-                + start;
-
-            if components.peek().is_none() {
-                break Some(index as u32);
-            }
-        }
-    }
-}
-
 impl<T, C: Config> ReadOnlyFilesystem for Rofs<T, C> {
     type File = T;
 
@@ -320,48 +220,6 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<T, C> {
     fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError> {
         let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
         let node = self.nodes.get(index).ok_or(RofsError::NotFound)?;
-        Ok(self.node_entry(node))
-    }
-
-    #[inline]
-    fn lookup(&self, path: &str) -> Result<u64, RofsError> {
-        self.lookup_in_dir(C::INODE_ROOT, path)
-    }
-
-    #[inline]
-    fn lookup_in_dir(&self, parent_inode: u64, path: &str) -> Result<u64, RofsError> {
-        let parent = parent_inode.wrapping_sub(C::INODE_ROOT) as u32;
-        let path = normalize_path::<C>(path);
-
-        match self.inode_by_path_ignore_ascii_case(parent, path) {
-            Some(inode) => Ok((inode as u64).wrapping_add(C::INODE_ROOT)),
-            None => Err(RofsError::NotFound),
-        }
-    }
-
-    #[inline]
-    fn file_count(&self) -> usize {
-        self.files.len()
-    }
-}
-
-impl<T, C: Config> ReadOnlyFilesystem for ArchivedRofs<T, C>
-where
-    T: rkyv::Archive,
-{
-    type File = T::Archived;
-
-    #[inline]
-    fn name(&self, inode: u64) -> Result<&str, RofsError> {
-        let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
-        let node = (*self.nodes).get(index).ok_or(RofsError::NotFound)?;
-        Ok(self.node_name(node))
-    }
-
-    #[inline]
-    fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError> {
-        let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
-        let node = (*self.nodes).get(index).ok_or(RofsError::NotFound)?;
         Ok(self.node_entry(node))
     }
 
@@ -549,38 +407,5 @@ mod tests {
         });
 
         &FS
-    }
-
-    mod rkyv_tests {
-        use rkyv::{rancor::Error, util::AlignedVec};
-
-        use crate::filesystem::ArchivedRofs;
-
-        use super::*;
-
-        #[test]
-        fn lookup() {
-            lookup_in_fs(archived_bnd_fs(), &PATHS);
-        }
-
-        #[test]
-        fn get_data() {
-            get_data_in_fs(archived_bnd_fs(), &PATHS);
-        }
-
-        type ArchivedBndFs = ArchivedRofs<u32, BndConfig>;
-
-        #[track_caller]
-        fn archived_bnd_fs() -> &'static ArchivedBndFs {
-            static FS_BYTES: LazyLock<AlignedVec> = LazyLock::new(|| {
-                let fs = bnd_fs();
-                rkyv::to_bytes::<Error>(fs).unwrap()
-            });
-
-            static ARHIVED_FS: LazyLock<&'static ArchivedBndFs> =
-                LazyLock::new(|| rkyv::access::<_, Error>(&FS_BYTES).unwrap());
-
-            &ARHIVED_FS
-        }
     }
 }
