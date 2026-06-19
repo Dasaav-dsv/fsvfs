@@ -1,6 +1,6 @@
 Start-Process -FilePath pwsh -WorkingDirectory (Get-Item .).FullName -ArgumentList `
     '-Command',
-    'cargo run --release -- dvdbnd -k dist/dvdbnd/Key -d dist/dvdbnd/Hash -m G:/fsvfs/eldenring `
+    'cargo run --release -- dvdbnd -k dist/dvdbnd/Key -d dist/dvdbnd/Hash -m G:/fsvfs/eldenring --no-cache `
         ''G:\SteamLibrary\steamapps\common\ELDEN RING\Game\Data3.bhd''
         
         Write-Host "`nPress any key to continue..."

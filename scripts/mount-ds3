@@ -1,10 +1,11 @@
 #! /bin/bash
 
-cargo run --release -- dvdbnd  -k dist/dvdbnd/Key -d dist/dvdbnd/Hash -m ../darksouls3 \
-    "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data1.bhd" \
-    "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data2.bhd" \
-    "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data3.bhd" \
-    "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data4.bhd" \
-    "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data5.bhd" \
-    "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/DLC1.bhd"  \
-    "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/DLC2.bhd"
+cargo run --release \
+    -- dvdbnd  -k dist/dvdbnd/Key -d dist/dvdbnd/Hash -m ../darksouls3 --no-cache \
+        "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data1.bhd" \
+        "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data2.bhd" \
+        "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data3.bhd" \
+        "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data4.bhd" \
+        "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/Data5.bhd" \
+        "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/DLC1.bhd"  \
+        "$HOME/.local/share/Steam/steamapps/common/DARK SOULS III/Game/DLC2.bhd"
