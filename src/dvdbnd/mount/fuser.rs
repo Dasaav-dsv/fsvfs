@@ -209,7 +209,8 @@ where
 
                 let res = mount
                     .read_file(ino.0, offset.into(), len, |buf, _| {
-                        Ok(data.extend_from_slice(buf))
+                        data.extend_from_slice(buf);
+                        Ok(())
                     })
                     .await;
 
@@ -360,8 +361,8 @@ where
 
         let blocks = self
             .bdts
-            .inner
-            .iter()
+            .0
+            .values()
             .map(|bdt| u64::div_ceil(bdt.size, BLOCK_SIZE as u64))
             .sum();
 

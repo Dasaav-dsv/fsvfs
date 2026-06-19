@@ -25,7 +25,7 @@ eytzinger = { version = "1.1.2", default-features = false, features = [
 ] }
 futures-util = "0.3.32"
 fxhash = "0.2.1"
-indexmap = { version = "2.14.0", features = ["rayon"] }
+indexmap = "2.14.0"
 malachite = { version = "0.9.1", default-features = false, features = [
     "malachite-nz",
     "naturals_and_integers",
@@ -41,6 +41,7 @@ smallvec = { version = "1.15.1", features = [
 thiserror = "2.0.18"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["ansi"] }
+xxhash-rust = { version = "0.8.15", features = ["const_xxh3", "std", "xxh3"] }
 zerocopy = { version = "0.8.48", features = ["derive", "std"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -66,9 +67,6 @@ steamlocate = "2.1.0"
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [profile.test.package.malachite]
-opt-level = 3
-
-[profile.test.package.malachite-nz]
 opt-level = 3
 
 [profile.test.package.xxhash-rust]

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ffi::OsStr, fs, io, path::Path, pin::pin, sync::Arc};
+use std::{cell::RefCell, fs, io, path::Path, pin::pin, sync::Arc};
 
 use color_eyre::eyre;
 use compio::{dispatcher::Dispatcher, fs::File};
@@ -12,10 +12,10 @@ use tracing::info;
 
 use crate::{
     dvdbnd::{
-        bhd5::FileAny,
+        bhd5::Bhd5File,
         dict::Dictionary,
         filesystem::{
-            DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, aligned,
+            DvdbndFile, DvdbndFilesystem, DvdbndRofs, DvdbndRofsBuilder, SrcId, SrcIdMap, aligned,
             encryption::{BLOCK_SIZE, Ciphertext, CiphertextBuffer, EncryptionId, EncryptionStore},
         },
         keys::Keys,
@@ -39,9 +39,7 @@ pub struct DvdbndMount<F: DvdbndFilesystem> {
 }
 
 #[derive(Debug)]
-struct BdtTls {
-    inner: Box<[Bdt]>,
-}
+struct BdtTls(SrcIdMap<Bdt>);
 
 #[derive(Debug)]
 struct Bdt {
@@ -75,19 +73,21 @@ impl DvdbndMount<DvdbndRofs> {
                 files
                     .par_iter()
                     .map(|(path, bytes)| {
-                        // FIXME
-                        let name = path
-                            .file_prefix()
-                            .and_then(OsStr::to_str)
-                            .unwrap_or_default();
-
-                        let file = FileAny::try_ref_from_bytes(bytes)?;
-
-                        Ok((name, file))
+                        let file = Bhd5File::try_ref_from_bytes(bytes)?;
+                        Ok((*path, file))
                     })
                     .collect::<eyre::Result<Vec<_>>>()?,
                 |t| info!("parsed BHD5 files ({t:.02?})")
             );
+
+            let bdts = bhds
+                .iter()
+                .map(|(path, bhd)| {
+                    let bdt = Bdt::new(path.to_bdt())?;
+                    Ok((SrcId::from(bhd.hash), bdt))
+                })
+                .collect::<io::Result<SrcIdMap<_>>>()
+                .map(BdtTls)?;
 
             let fs = time!(
                 DvdbndRofsBuilder::new()
@@ -97,7 +97,6 @@ impl DvdbndMount<DvdbndRofs> {
                 |t| info!("built dvdbnd read-only filesystem ({t:.02?})"),
             );
 
-            let bdts = files.iter().map(|(path, _)| path.to_bdt());
             let mount = Self::from_fs_and_bdts(fs, bdts)?;
 
             Ok(mount)
@@ -109,17 +108,12 @@ impl<F: DvdbndFilesystem> DvdbndMount<F>
 where
     F: Send + Sync + 'static,
 {
-    fn from_fs_and_bdts<P>(fs: F, paths: P) -> eyre::Result<Self>
-    where
-        P: IntoIterator<Item: AsRef<Path>>,
-    {
+    fn from_fs_and_bdts(fs: F, bdts: BdtTls) -> eyre::Result<Self> {
         let fs = Arc::new(fs);
 
         let dispatcher = Dispatcher::builder()
             .proactor_builder(aligned::proactor_builder())
             .build()?;
-
-        let bdts = BdtTls::new(paths)?;
 
         Ok(Self {
             fs,
@@ -149,13 +143,11 @@ where
         };
 
         let file_len = file.unpadded_len();
-        let file_padded_len = file.len();
 
         let file_offset = file_offset.min(file_len as u64) as u32;
         let len = len.min(file_len - file_offset);
 
-        let file_start = file.data_offset();
-        let data_start = file_start + file_offset as u64;
+        let data_start = file.data_offset + file_offset as u64;
 
         let end = file_offset + len;
 
@@ -176,22 +168,11 @@ where
             }
         };
 
-        let bdt = self.bdts.open(file.src_index()).await?;
+        let bdt = self.bdts.open(file).await?;
 
-        if let Some(encryption_id) = file.encryption_id() {
-            let encryption_store = self.fs.encryption_store(file.src_index());
-
+        if let Some(encryption_id) = file.encryption_id {
             return self
-                .read_and_decrypt_file(
-                    bdt,
-                    data_start,
-                    len,
-                    file_start,
-                    file_padded_len,
-                    encryption_store,
-                    encryption_id,
-                    f,
-                )
+                .read_and_decrypt_file(file, bdt, data_start, len, encryption_id, f)
                 .await;
         }
 
@@ -199,8 +180,8 @@ where
             bdt,
             data_start,
             len,
-            file_start,
-            file_padded_len
+            file.data_offset,
+            file.len,
         ));
 
         while let Some((buffer, file_offset)) = stream.try_next().await? {
@@ -212,20 +193,20 @@ where
 
     async fn read_and_decrypt_file(
         &self,
+        file: &DvdbndFile,
         bdt: File,
         data_start: u64,
         len: u32,
-        file_start: u64,
-        file_padded_len: u32,
-        encryption_store: &impl EncryptionStore,
         encryption_id: EncryptionId,
         mut f: impl FnMut(&[u8], i64) -> eyre::Result<()>,
     ) -> eyre::Result<()> {
-        let start = (data_start - file_start) as u32;
+        let start = (data_start - file.data_offset) as u32;
         let end = start + len;
 
+        let encryption_store = self.fs.encryption_store(file.src_id);
+
         let mut stream =
-            aligned::stream_read_windows(bdt, data_start, len, file_start, file_padded_len);
+            aligned::stream_read_windows(bdt, data_start, len, file.data_offset, file.len);
 
         let mut cbuf = CiphertextBuffer::default();
         let mut is_last = false;
@@ -271,26 +252,13 @@ where
 }
 
 impl BdtTls {
-    fn new<P>(paths: P) -> io::Result<Self>
-    where
-        P: IntoIterator<Item: AsRef<Path>>,
-    {
-        let bdts = paths
-            .into_iter()
-            .map(Bdt::new)
-            .collect::<io::Result<Vec<_>>>()?
-            .into_boxed_slice();
-
-        Ok(Self { inner: bdts })
-    }
-
-    async fn open(&self, bdt_index: usize) -> io::Result<File> {
+    async fn open(&self, file: &DvdbndFile) -> io::Result<File> {
         thread_local! {
             static MAP: RefCell<FxHashMap<Box<Path>, File>> =
                 const { RefCell::new(FxHashMap::with_hasher(FxBuildHasher::new())) };
         }
 
-        let path = &self.inner[bdt_index].path;
+        let path = &self.0[&file.src_id].path;
 
         if let Some(file) = MAP.with_borrow(|map| map.get(path).cloned()) {
             return Ok(file);

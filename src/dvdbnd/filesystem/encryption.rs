@@ -6,7 +6,7 @@ use aes::cipher::{
 };
 use async_trait::async_trait;
 use futures_util::TryFutureExt;
-use rkyv::{Archive, Portable, Serialize};
+use rkyv::{Archive, Deserialize, Portable, Serialize};
 use thiserror::Error;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned};
 
@@ -41,7 +41,9 @@ pub enum DecryptError {
     Id(EncryptionId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize,
+)]
 #[repr(transparent)]
 pub struct EncryptionId(NonZero<u32>);
 
