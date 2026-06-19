@@ -1,14 +1,12 @@
-use std::{
-    borrow::Cow, collections::VecDeque, fmt, hint::cold_path, iter::Peekable, marker::PhantomData,
-    mem, num::NonZero,
-};
+use std::{borrow::Cow, fmt, hint::cold_path, iter::Peekable, marker::PhantomData, num::NonZero};
 
-use eytzinger::{SliceExt, permutation::InplacePermutator};
-use fxhash::FxHashMap;
-use rkyv::{Archive, Serialize};
+use eytzinger::SliceExt;
+use rkyv::{Archive, Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::cow::CowExt;
+
+pub mod object;
 
 #[derive(Debug, Error)]
 pub enum RofsError {
@@ -17,11 +15,6 @@ pub enum RofsError {
 
     #[error("not a file")]
     IsDir,
-}
-
-#[derive(Debug)]
-pub struct RofsBuilder<'a, T> {
-    files: Vec<(&'a str, T)>,
 }
 
 #[derive(Archive, Serialize)]
@@ -68,13 +61,13 @@ pub trait ReadOnlyFilesystem {
     fn file_count(&self) -> usize;
 }
 
-#[derive(Clone, Copy, Debug, Archive, Serialize)]
+#[derive(Clone, Copy, Debug, Archive, Serialize, Deserialize)]
 struct Node {
     content: NodeContent,
     name_index: u32,
 }
 
-#[derive(Clone, Copy, Debug, Archive, Serialize)]
+#[derive(Clone, Copy, Debug, Archive, Serialize, Deserialize)]
 enum NodeContent {
     Dir {
         child_index: NonZero<u32>,
@@ -85,145 +78,16 @@ enum NodeContent {
     },
 }
 
-impl<'a, T> RofsBuilder<'a, T> {
-    pub const fn new() -> Self {
-        Self { files: Vec::new() }
-    }
-
-    pub fn with_files<I>(&mut self, iter: I) -> &mut Self
-    where
-        I: IntoIterator<Item = (&'a str, T)>,
-    {
-        self.files.extend(iter);
-        self
-    }
-
-    pub fn finish<C: Config>(&mut self) -> Rofs<T, C> {
-        let Self { files } = mem::take(self);
-        Rofs::new(files)
-    }
-}
-
 impl<T, C: Config> Rofs<T, C> {
-    fn new(files: Vec<(&str, T)>) -> Rofs<T, C> {
-        assert_u32(files.len());
-
-        let (file_paths, files): (Vec<_>, Vec<_>) = files
-            .into_iter()
-            .zip(0..)
-            .map(|((path, file), data_index)| {
-                let mut path = normalize_path::<C>(path);
-                Cow::to_ascii_lowercase(&mut path);
-                ((path, data_index), file)
-            })
-            .unzip();
-
-        let files = files.into_boxed_slice();
-
-        enum TreeNode<'a> {
-            Branch(FxHashMap<&'a str, TreeNode<'a>>),
-            Leaf(u32),
-        }
-
-        let mut root = FxHashMap::default();
-
-        let mut total = 1usize;
-        let mut total_len = 0usize;
-
-        for (file_path, file_node) in &file_paths {
-            let mut node = &mut root;
-
-            let mut components = components::<C>(file_path);
-
-            while let Some(component) = components.next() {
-                assert!(
-                    component.len() < u8::MAX as usize,
-                    "file names must be shorter than 255 bytes ({component})",
-                );
-
-                total_len += component.len() + 1;
-
-                let next = node.entry(component).or_insert_with(|| {
-                    total += 1;
-
-                    match components.peek() {
-                        Some(_) => TreeNode::Branch(Default::default()),
-                        None => TreeNode::Leaf(*file_node),
-                    }
-                });
-
-                match next {
-                    TreeNode::Branch(next) => node = next,
-                    TreeNode::Leaf(_) => break,
-                }
-            }
-        }
-
-        assert_u32(total);
-
-        let root = FxHashMap::from_iter([("", TreeNode::Branch(root))]);
-
-        let mut nodes = Vec::<Node>::with_capacity(total);
-
-        let mut names = Vec::with_capacity(total_len);
-        let mut names_interned = FxHashMap::with_capacity_and_hasher(total, Default::default());
-
-        let mut queue = VecDeque::from([&root]);
-        let mut child_index = NonZero::<u32>::MIN;
-
-        while let Some(branch) = queue.pop_front() {
-            let first = nodes.len();
-
-            for (&component, node) in branch {
-                let name_index = *names_interned.entry(component).or_insert_with(|| {
-                    let index = names.len();
-                    names.push(component.len() as u8);
-                    names.extend_from_slice(component.as_bytes());
-                    index
-                });
-
-                match node {
-                    TreeNode::Branch(branch) => {
-                        let child_count = branch.len() as u32;
-
-                        nodes.push(Node::new_dir(child_index, child_count, name_index));
-                        child_index = child_index.checked_add(child_count).unwrap();
-
-                        queue.push_back(branch);
-                    }
-                    TreeNode::Leaf(data_index) => {
-                        nodes.push(Node::new_file(*data_index, name_index));
-                    }
-                }
-            }
-
-            // SAFETY: indices and lengths are valid for length-prefixed strings.
-            nodes[first..].sort_unstable_by_key(|node| unsafe {
-                let name = names.get_unchecked(node.name_index()..);
-                let (len, rest) = name.split_first().unwrap_unchecked();
-                rest.get_unchecked(..*len as usize)
-            });
-
-            nodes[first..].eytzingerize(&mut InplacePermutator);
-        }
-
-        Rofs {
-            nodes: nodes.into_boxed_slice(),
-            names: names.into_boxed_slice(),
-            files,
-            _config: PhantomData,
-        }
-    }
-
     #[inline]
-    fn node_to_entry(&self, node: &Node) -> Entry<'_, T> {
+    fn node_entry(&self, node: &Node) -> Entry<'_, T> {
         let index = self
             .nodes
             .element_offset(node)
             .expect("must belong to this filesystem");
 
         let inode = (index as u64).wrapping_sub(C::INODE_ROOT);
-        let name = self.node_to_name(node);
+        let name = self.node_name(node);
 
         let kind = match node.content {
             NodeContent::Dir {
@@ -235,7 +99,7 @@ impl<T, C: Config> Rofs<T, C> {
 
                 let iter = self.nodes[start..end]
                     .iter()
-                    .map(|node| self.node_to_entry(node));
+                    .map(|node| self.node_entry(node));
 
                 EntryKind::Dir(Box::new(iter))
             }
@@ -249,7 +113,7 @@ impl<T, C: Config> Rofs<T, C> {
     }
 
     #[inline]
-    fn node_to_name(&self, node: &Node) -> &str {
+    fn node_name(&self, node: &Node) -> &str {
         assert!(
             self.nodes.as_ptr_range().contains(&&raw const *node),
             "must belong to this filesystem",
@@ -304,17 +168,9 @@ impl<T, C: Config> Rofs<T, C> {
             let start = child_index.get() as usize;
             let end = start + child_count as usize;
 
-            // SAFETY: same as in `Rofs::new`.
-            // Note this wouldn't be safe in the archived version.
-            index = start
-                + self.nodes[start..end].eytzinger_search_by_key(
-                    &component.as_bytes(),
-                    |node| unsafe {
-                        let name = self.names.get_unchecked(node.name_index()..);
-                        let (len, rest) = name.split_first().unwrap_unchecked();
-                        rest.get_unchecked(..*len as usize)
-                    },
-                )?;
+            index = self.nodes[start..end]
+                .eytzinger_search_by_key(&component, |node| self.node_name(node))?
+                + start;
 
             if components.peek().is_none() {
                 break Some(index as u32);
@@ -323,21 +179,8 @@ impl<T, C: Config> Rofs<T, C> {
     }
 }
 
-#[track_caller]
-fn assert_u32<N>(n: N) -> u32
-where
-    N: TryInto<u32> + fmt::Display + Copy,
-{
-    if let Ok(n) = n.try_into() {
-        return n;
-    }
-
-    panic!("conversion failed: input ({n}) does not fit in a u32!");
-}
-
 impl Node {
-    fn new_dir(child_index: NonZero<u32>, child_count: u32, name_index: usize) -> Self {
-        let name_index = u32::try_from(name_index).expect("name index too large");
+    fn dir(child_index: NonZero<u32>, child_count: u32, name_index: u32) -> Self {
         Self {
             content: NodeContent::Dir {
                 child_index,
@@ -347,8 +190,7 @@ impl Node {
         }
     }
 
-    fn new_file(data_index: u32, name_index: usize) -> Self {
-        let name_index = u32::try_from(name_index).expect("name index too large");
+    fn file(data_index: u32, name_index: u32) -> Self {
         Self {
             content: NodeContent::File { data_index },
             name_index,
@@ -371,14 +213,14 @@ where
     T: rkyv::Archive,
 {
     #[inline]
-    fn node_to_entry(&self, node: &ArchivedNode) -> Entry<'_, T::Archived> {
+    fn node_entry(&self, node: &ArchivedNode) -> Entry<'_, T::Archived> {
         let index = self
             .nodes
             .element_offset(node)
             .expect("must belong to this filesystem");
 
         let inode = (index as u64).wrapping_sub(C::INODE_ROOT);
-        let name = self.node_to_name(node);
+        let name = self.node_name(node);
 
         let kind = match node.content {
             ArchivedNodeContent::Dir {
@@ -390,7 +232,7 @@ where
 
                 let iter = self.nodes[start..end]
                     .iter()
-                    .map(|node| self.node_to_entry(node));
+                    .map(|node| self.node_entry(node));
 
                 EntryKind::Dir(Box::new(iter))
             }
@@ -405,7 +247,7 @@ where
 
     #[inline]
     #[track_caller]
-    fn node_to_name(&self, node: &ArchivedNode) -> &str {
+    fn node_name(&self, node: &ArchivedNode) -> &str {
         let name_index = node.name_index.to_native() as usize;
 
         let name = &self.names[name_index..];
@@ -453,16 +295,9 @@ where
             let start = child_index.get() as usize;
             let end = start + child_count.to_native() as usize;
 
-            index = start
-                + self.nodes[start..end].eytzinger_search_by_key(
-                    &component.as_bytes(),
-                    |node| {
-                        let name_index = node.name_index.to_native() as usize;
-                        let name = &self.names[name_index..];
-                        let (len, rest) = name.split_first().unwrap();
-                        &rest[..*len as usize]
-                    },
-                )?;
+            index = self.nodes[start..end]
+                .eytzinger_search_by_key(&component, |node| self.node_name(node))?
+                + start;
 
             if components.peek().is_none() {
                 break Some(index as u32);
@@ -478,14 +313,14 @@ impl<T, C: Config> ReadOnlyFilesystem for Rofs<T, C> {
     fn name(&self, inode: u64) -> Result<&str, RofsError> {
         let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
         let node = self.nodes.get(index).ok_or(RofsError::NotFound)?;
-        Ok(self.node_to_name(node))
+        Ok(self.node_name(node))
     }
 
     #[inline]
     fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError> {
         let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
         let node = self.nodes.get(index).ok_or(RofsError::NotFound)?;
-        Ok(self.node_to_entry(node))
+        Ok(self.node_entry(node))
     }
 
     #[inline]
@@ -520,14 +355,14 @@ where
     fn name(&self, inode: u64) -> Result<&str, RofsError> {
         let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
         let node = (*self.nodes).get(index).ok_or(RofsError::NotFound)?;
-        Ok(self.node_to_name(node))
+        Ok(self.node_name(node))
     }
 
     #[inline]
     fn entry(&self, inode: u64) -> Result<Entry<'_, Self::File>, RofsError> {
         let index = inode.wrapping_sub(C::INODE_ROOT) as usize;
         let node = (*self.nodes).get(index).ok_or(RofsError::NotFound)?;
-        Ok(self.node_to_entry(node))
+        Ok(self.node_entry(node))
     }
 
     #[inline]
@@ -581,12 +416,6 @@ fn normalize_path<C: Config>(path: &str) -> Cow<'_, str> {
     }
 }
 
-impl<T> Default for RofsBuilder<'_, T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<T: fmt::Debug, C: Config> fmt::Debug for Rofs<T, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Rofs")
@@ -611,7 +440,7 @@ mod tests {
     use std::{fmt, fs, sync::LazyLock};
 
     use crate::{
-        filesystem::{Config, EntryKind, ReadOnlyFilesystem, Rofs, RofsBuilder},
+        filesystem::{Config, EntryKind, ReadOnlyFilesystem, Rofs, object::RofsObject},
         hash::hash_path32,
     };
 
@@ -686,25 +515,38 @@ mod tests {
 
     #[track_caller]
     fn bnd_fs() -> &'static BndFs {
-        static FS: LazyLock<BndFs> =
-            LazyLock::new(|| {
-                let files = [
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/GameDataEbl.txt",
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/HqChrEbl.txt",
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/HqMapEbl.txt",
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/HqObjEbl.txt",
-                    "dist/dvdbnd/Hash/DarkSouls2_PC/HqPartsEbl.txt",
-                ]
-                .into_iter()
-                .map(|path| fs::read_to_string(path).unwrap())
-                .collect::<Vec<_>>();
+        static FS: LazyLock<BndFs> = LazyLock::new(|| {
+            let files = [
+                "dist/dvdbnd/Hash/DarkSouls2_PC/GameDataEbl.txt",
+                "dist/dvdbnd/Hash/DarkSouls2_PC/HqChrEbl.txt",
+                "dist/dvdbnd/Hash/DarkSouls2_PC/HqMapEbl.txt",
+                "dist/dvdbnd/Hash/DarkSouls2_PC/HqObjEbl.txt",
+                "dist/dvdbnd/Hash/DarkSouls2_PC/HqPartsEbl.txt",
+            ]
+            .into_iter()
+            .map(|path| fs::read_to_string(path).unwrap())
+            .collect::<Vec<_>>();
 
-                RofsBuilder::new()
-                    .with_files(files.iter().flat_map(|file| {
-                        file.lines().map(|path| (path, hash_path32(path).unwrap()))
-                    }))
-                    .finish()
-            });
+            let fs = files
+                .iter()
+                .map(|file| {
+                    RofsObject::new(file.lines().map(|path| (path, hash_path32(path).unwrap())))
+                })
+                .fold(RofsObject::default(), RofsObject::merge)
+                .into_rofs();
+
+            fs::write(
+                "out.txt",
+                fs.nodes
+                    .iter()
+                    .map(|node| fs.node_name(node))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+            .unwrap();
+
+            fs
+        });
 
         &FS
     }

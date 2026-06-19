@@ -53,49 +53,52 @@ struct Bdt {
 impl DvdbndMount<DvdbndRofs> {
     pub fn from_keys_and_dict(keys: &Keys<'_>, dict: Option<&Dictionary>) -> eyre::Result<Self> {
         let thread_pool = ThreadPoolBuilder::new().use_current_thread().build()?;
-        let files = time!(
-            thread_pool.in_place_scope_fifo(|_| {
+
+        let fs = thread_pool.in_place_scope_fifo(|_| -> eyre::Result<DvdbndRofs> {
+            let files = time!(
                 keys.by_path
                     .par_iter()
                     .map(|(path, key)| {
                         let mut bytes = fs::read(path)?;
+
                         if let Some(key) = key {
                             let len = key.decrypt_blocks_in_place(&mut bytes)?;
                             bytes.truncate(len);
                         }
-                        Ok(bytes)
+
+                        // FIXME
+                        let name = path
+                            .file_prefix()
+                            .and_then(OsStr::to_str)
+                            .unwrap_or_default();
+
+                        Ok((name, bytes))
                     })
-                    .collect::<eyre::Result<Vec<_>>>()
-            })?,
-            |t| info!("decrypted BHD5 files ({t:.02?})"),
-        );
+                    .collect::<eyre::Result<Vec<_>>>()?,
+                |t| info!("decrypted BHD5 files ({t:.02?})"),
+            );
 
-        let bhds = time!(
-            keys.by_path
-                .iter()
-                .zip(&files)
-                .map(|((path, _), bytes)| {
-                    let file = FileAny::try_ref_from_bytes(bytes)?;
+            let bhds = time!(
+                files
+                    .par_iter()
+                    .map(|(name, bytes)| {
+                        let file = FileAny::try_ref_from_bytes(bytes)?;
+                        Ok((*name, file))
+                    })
+                    .collect::<eyre::Result<Vec<_>>>()?,
+                |t| info!("parsed BHD5 files ({t:.02?})")
+            );
 
-                    // FIXME
-                    let name = path
-                        .file_prefix()
-                        .and_then(OsStr::to_str)
-                        .unwrap_or_default();
+            let fs = time!(
+                DvdbndRofsBuilder::new()
+                    .with_bhds(bhds)
+                    .with_dict(dict)
+                    .finish()?,
+                |t| info!("built dvdbnd read-only filesystem ({t:.02?})"),
+            );
 
-                    Ok((name, file))
-                })
-                .collect::<eyre::Result<Vec<_>>>()?,
-            |t| info!("parsed BHD5 files ({t:.02?})")
-        );
-
-        let fs = time!(
-            DvdbndRofsBuilder::new()
-                .with_bhds(bhds)
-                .with_dict(dict)
-                .finish()?,
-            |t| info!("built dvdbnd read-only filesystem ({t:.02?})"),
-        );
+            Ok(fs)
+        })?;
 
         let bdts = keys.by_path.keys().map(|path| path.to_bdt());
         let mount = Self::from_fs_and_bdts(fs, bdts)?;
