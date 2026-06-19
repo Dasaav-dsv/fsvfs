@@ -3,6 +3,7 @@ use std::{borrow::Cow, num::NonZero};
 use color_eyre::eyre;
 use fxhash::FxBuildHasher;
 use indexmap::IndexMap;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rkyv::{Archive, Serialize};
 
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
             ArchivedEncryptionId, EncryptionId, EncryptionStore, store_encryption,
         },
     },
-    filesystem::{Config, ReadOnlyFilesystem, Rofs, RofsBuilder},
+    filesystem::{Config, ReadOnlyFilesystem, Rofs, object::RofsObject},
 };
 
 pub mod aligned;
@@ -98,14 +99,11 @@ impl<'a, 'b, 'c> DvdbndRofsBuilder<'a, 'b, 'c> {
             files_by_path.push(files?);
         }
 
-        let inner = RofsBuilder::new()
-            .with_files(
-                files_by_path
-                    .iter()
-                    .flatten()
-                    .map(|(path, file)| (&**path, *file)),
-            )
-            .finish();
+        let inner = files_by_path
+            .par_iter()
+            .map(|files| RofsObject::new(files.iter().map(|(path, file)| (path, *file))))
+            .reduce(RofsObject::<_, DvdbndConfig>::default, RofsObject::merge)
+            .into_rofs();
 
         Ok(DvdbndRofs {
             inner,

@@ -362,7 +362,7 @@ where
             .bdts
             .inner
             .iter()
-            .map(|bdt| u64::div_ceil(bdt.size as u64, BLOCK_SIZE as u64))
+            .map(|bdt| u64::div_ceil(bdt.size, BLOCK_SIZE as u64))
             .sum();
 
         reply.statfs(blocks, 0, 0, files, 0, BLOCK_SIZE, MAX_NAME, BLOCK_SIZE);
