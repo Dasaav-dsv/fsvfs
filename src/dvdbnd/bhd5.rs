@@ -1,5 +1,4 @@
 use color_eyre::eyre;
-use xxhash_rust::{const_xxh3, xxh3::xxh3_128_with_seed};
 use zerocopy::{BE, LE};
 
 use crate::dvdbnd::bhd5::format::File;
@@ -12,31 +11,17 @@ mod magic;
 pub use byte_order::ByteOrderExt;
 
 #[derive(Debug)]
-pub struct Bhd5File<'a> {
-    pub kind: Bhd5FileKind<'a>,
-    pub hash: u128,
-}
-
-#[derive(Debug)]
-pub enum Bhd5FileKind<'a> {
+pub enum Bhd5File<'a> {
     LE(File<'a, LE>),
     BE(File<'a, BE>),
 }
 
 impl<'a> Bhd5File<'a> {
     pub fn try_ref_from_bytes(bytes: &'a [u8]) -> eyre::Result<Self> {
-        const SEED: u64 = const_xxh3::xxh3_64(env!("CARGO_PKG_VERSION").as_bytes());
-
         match File::<LE>::try_ref_from_bytes(bytes) {
-            Ok(le) => Ok(Self {
-                kind: Bhd5FileKind::LE(le),
-                hash: xxh3_128_with_seed(bytes, SEED),
-            }),
+            Ok(le) => Ok(Self::LE(le)),
             Err(err_le) => match File::<BE>::try_ref_from_bytes(bytes) {
-                Ok(be) => Ok(Self {
-                    kind: Bhd5FileKind::BE(be),
-                    hash: xxh3_128_with_seed(bytes, SEED),
-                }),
+                Ok(be) => Ok(Self::BE(be)),
                 Err(err_be) => Err(eyre::eyre!(
                     "LE ref error: {err_le}; BE ref error: {err_be}"
                 )),

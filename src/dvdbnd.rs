@@ -11,6 +11,7 @@ use color_eyre::eyre;
 use tracing::info;
 
 use crate::{
+    cache::Cache,
     cli::DvdbndArgs,
     dvdbnd::{dict::Dictionary, keys::KeyProvider, mount::DvdbndMount, path::ArchivePaths},
     time::time,
@@ -29,6 +30,7 @@ pub fn mount(
     game: Option<&str>,
     keys_dir: &Path,
     dict_dir: &Path,
+    cache: Cache,
 ) -> eyre::Result<()> {
     let archives = ArchivePaths::new(archives);
 
@@ -48,7 +50,8 @@ pub fn mount(
         ),
     );
 
-    DvdbndMount::from_keys_and_dict(&keys, dict.as_ref())?.mount(mountpoint)?;
+    let mount = DvdbndMount::from_keys_and_dict(&keys, dict.as_ref(), cache)?;
+    mount.mount(mountpoint)?;
 
     Ok(())
 }
@@ -67,7 +70,18 @@ pub fn mount_from_args(args: DvdbndArgs) -> eyre::Result<()> {
         .as_deref()
         .map_or_else(|| app_dir.join("dvdbnd/Hash"), PathBuf::from);
 
-    tracing::info!(?keys_dir, ?dict_dir);
+    let cache_dir = args
+        .cache
+        .cache
+        .as_deref()
+        .map_or_else(|| app_dir.join("cache"), PathBuf::from);
+
+    tracing::info!(?keys_dir, ?dict_dir, ?cache_dir);
+
+    let cache = match args.cache.no_cache {
+        Some(true) => Cache::empty(),
+        _ => Cache::open(&cache_dir),
+    };
 
     mount(
         &args.mountpoint,
@@ -75,6 +89,7 @@ pub fn mount_from_args(args: DvdbndArgs) -> eyre::Result<()> {
         args.game.as_deref(),
         &keys_dir,
         &dict_dir,
+        cache,
     )
 }
 

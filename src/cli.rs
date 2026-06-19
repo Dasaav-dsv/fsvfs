@@ -66,6 +66,25 @@ pub struct DvdbndArgs {
     /// By default fsvfs uses a dictionary folder in its install directory.
     #[arg(short, long)]
     pub dict: Option<String>,
+
+    #[command(flatten)]
+    pub cache: CacheArgs,
+}
+
+#[derive(Args, Debug)]
+#[group(multiple = false)]
+pub struct CacheArgs {
+    /// Directory where to store cached artifacts to speed up execution.
+    ///
+    /// Mutually exclusive with `--no-cache`.
+    #[arg(short, long)]
+    pub cache: Option<String>,
+
+    /// Do not read or write the cache.
+    ///
+    /// Mutually exclusive with `-c`, `--cache`.
+    #[arg(long("no-cache"), num_args(0), default_missing_value = "true")]
+    pub no_cache: Option<bool>,
 }
 
 #[cfg(test)]
@@ -103,11 +122,13 @@ mod tests {
         assert_eq!(command.mountpoint, MOUNTPOINT);
         assert_eq!(command.dict, None);
         assert_eq!(command.keys, None);
+        assert_eq!(command.cache.cache, None);
+        assert_eq!(command.cache.no_cache, None);
         assert_eq!(command.archive, ARCHIVES);
     }
 
     #[test]
-    fn dvdbnd_args_with_dict_keys() {
+    fn dvdbnd_args_with_dict_keys_cache() {
         let cli = Cli::parse_from([
             "fsvfs",
             "dvdbnd",
@@ -117,6 +138,8 @@ mod tests {
             "ds3-keys",
             "-d",
             "ds3-hashes",
+            "-c",
+            "my-cache",
             ARCHIVES[0],
             ARCHIVES[1],
             ARCHIVES[2],
@@ -131,6 +154,8 @@ mod tests {
         assert_eq!(command.mountpoint, MOUNTPOINT);
         assert_ne!(command.dict, None);
         assert_ne!(command.keys, None);
+        assert_ne!(command.cache.cache, None);
+        assert_eq!(command.cache.no_cache, None);
         assert_eq!(command.archive, ARCHIVES);
     }
 }

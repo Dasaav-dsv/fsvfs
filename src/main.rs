@@ -4,6 +4,7 @@ use tracing::debug;
 
 use crate::cli::{Cli, Command};
 
+mod cache;
 mod cli;
 mod cow;
 mod crypto;
