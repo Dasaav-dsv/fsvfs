@@ -1,0 +1,21 @@
+import { Palette } from "std-widgets.slint";
+
+export component VerticalBorderLayout inherits VerticalLayout {
+    in property <physical-length> border-spacing: 0px;
+    in property <physical-length> border-padding: 0px;
+
+    Rectangle {
+        border-color: Palette.alternate-background;
+        border-width: 1.8px;
+        border-radius: 6px;
+
+        VerticalLayout {
+            padding: border-padding;
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: border-spacing - 2px;
+
+            @children
+        }
+    }
+}

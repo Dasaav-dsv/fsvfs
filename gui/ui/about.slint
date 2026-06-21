@@ -1,0 +1,119 @@
+import { StandardButton, Palette, ScrollView } from "std-widgets.slint";
+
+import { VerticalBorderLayout } from "layout.slint";
+
+export component AboutWindow inherits Dialog {
+    callback closed <=> close.clicked;
+
+    Rectangle {
+        VerticalLayout {
+            spacing: 4px;
+            padding: 4px;
+
+            Text {
+                text: "🛈 About";
+                font-size: 14px;
+            }
+
+            VerticalBorderLayout {
+                border-padding: 10px;
+
+                ScrollView {
+                    width: 560px;
+                    min-height: 200px;
+
+                    VerticalLayout {
+                        alignment: start;
+                        padding: 12px;
+                        spacing: 6px;
+
+                        StyledText {
+                            text: @markdown("**<u>fsvfs</u> - mount FromSoftware virtual filesystems**");
+                            default-font-size: 22px;
+                        }
+
+                        Text {
+                            text: "Access archived game files (Dark Souls, Armored Core, Elden Ring...) with this cross platform\nuserspace filesystem framework without needing to unpack and store tens of gigabytes of\n(duplicate) data.";
+                        }
+
+                        StyledText {
+                            text: @markdown("**<u>fsvfs-gui</u> (about this GUI)**");
+                            default-font-size: 22px;
+                        }
+
+                        Text {
+                            text: "Conveniently manages multiple mounts and mount configurations.\nDetects installed Steam games.";
+                        }
+
+                        Text {
+                            text: "Settings";
+                            font-size: 18px;
+                            font-weight: FontWeight.bold;
+                        }
+
+                        VerticalLayout {
+                            StyledText {
+                                text: @markdown("- **Keys**: path to directory or nested directories with public RSA keys to use.");
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Dictionary**: path to directory or nested directories with hash dictionaries to use.");
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Cache**: path to directory where to store metadata to speed up DVDBND processing.");
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Use cache**: (if checked) read and store metadate to this cache.");
+                                x: 12px;
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Clear cache**: delete all cached metadata.");
+                                x: 12px;
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Select directory**: choose from a list of automatically detected directories or **Browse**.");
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Check** the DVDBNDs you'd like to mount.");
+                                x: 12px;
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Mount point**: path to an *EXISTING* and *EMPTY* directory.");
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Mount filesystem**: mount **checked** DVDBNDs at the **mount point**, *which must be set*.");
+                            }
+                        }
+
+                        Text {
+                            text: "Controls";
+                            font-size: 18px;
+                            font-weight: FontWeight.bold;
+                        }
+
+                        VerticalLayout {
+                            StyledText {
+                                text: @markdown("- **Ctrl + O**: open (load) mount configuration.");
+                            }
+
+                            StyledText {
+                                text: @markdown("- **Ctrl + S**: save current mount configuration.");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    close := StandardButton {
+        kind: ok;
+    }
+}
