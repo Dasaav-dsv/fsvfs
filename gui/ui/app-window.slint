@@ -1,0 +1,188 @@
+import {
+    Button,
+    CheckBox,
+    ComboBox,
+    LineEdit,
+    ListView,
+} from "std-widgets.slint";
+
+import { AboutWindow } from "about.slint";
+import { BrowsePath } from "browse.slint";
+import { VerticalBorderLayout } from "layout.slint";
+
+struct GameDirs {
+    dirs: [string],
+    active-index: int,
+}
+
+struct DvdbndCheck {
+    name: string,
+    checked: bool,
+}
+
+export component AppWindow inherits Window {
+    title: "fsvfs GUI";
+
+    preferred-width: 720px;
+    preferred-height: 480px;
+
+    in-out property <string> keys-path;
+    in-out property <string> dict-path;
+    in-out property <string> cache-path;
+    in-out property <bool> use-cache;
+
+    in-out property <GameDirs> game-dirs;
+    in-out property <[DvdbndCheck]> dvdbnds;
+
+    in-out property <string> mount-path;
+
+    callback menu-open();
+    callback menu-save();
+
+    callback keys-browse <=> keys-browse.browse;
+    callback dict-browse <=> dict-browse.browse;
+    callback cache-browse <=> cache-browse.browse;
+
+    callback cache-clear <=> cache-clear-button.clicked;
+
+    callback dvdbnd-browse-clicked <=> dvdbnd-browse-button.clicked;
+    callback dvdbnd-checked(int);
+
+    callback mount-browse <=> mount-browse.browse;
+    callback mount <=> mount-button.clicked;
+
+    private property <bool> about-open;
+
+    MenuBar {
+        Menu {
+            title: "File";
+
+            MenuItem {
+                title: "Open configuration";
+                shortcut: @keys(Control+O);
+                activated => menu-open();
+            }
+
+            MenuItem {
+                title: "Save configuration";
+                shortcut: @keys(Control+S);
+                activated => menu-save();
+            }
+        }
+
+        Menu {
+            title: "Help";
+
+            menu-about := MenuItem {
+                title: "About";
+                activated => {
+                    about-open = true;
+                }
+            }
+        }
+    }
+
+    VerticalBorderLayout {
+        alignment: stretch;
+        border-padding: 10px;
+        border-spacing: 8px;
+        padding: 20px;
+        spacing: 8px;
+
+        keys-browse := BrowsePath {
+            name: "Keys";
+            path <=> keys-path;
+        }
+
+        dict-browse := BrowsePath {
+            name: "Dictionary";
+            path <=> dict-path;
+        }
+
+        cache-browse := BrowsePath {
+            name: "Cache";
+            path <=> cache-path;
+
+            HorizontalLayout {
+                alignment: end;
+                padding-left: 6px;
+                padding-right: 8px;
+                padding-bottom: 6px;
+                spacing: 4px;
+
+                cache-use-check := CheckBox {
+                    text: "Use cache";
+                    checked <=> use-cache;
+                }
+
+                cache-clear-button := Button {
+                    text: "Clear cache";
+                    height: 21px;
+                }
+            }
+        }
+
+        VerticalBorderLayout {
+            VerticalLayout {
+                padding: 8px;
+                spacing: 8px;
+
+                Text {
+                    text: "📂     Select directory:";
+                    font-size: 9.5pt;
+                    font-weight: FontWeight.thin;
+                }
+
+                GridLayout {
+                    spacing: 4px;
+
+                    dvdbnd-browse-combo := ComboBox {
+                        height: 24px;
+                        model <=> game-dirs.dirs;
+                        current-index <=> game-dirs.active-index;
+                    }
+
+                    dvdbnd-browse-button := Button {
+                        col: 1;
+                        text: "Browse";
+                        height: 24px;
+                    }
+
+                    ListView {
+                        row: 1;
+                        colspan: 2;
+
+                        for dvdbnd[i] in dvdbnds: CheckBox {
+                            height: 20px;
+                            text: dvdbnd.name;
+                            // FIXME: uncomment for builds, until Slint 1.17.0 releases.
+                            // Slint viewer is built with an older Slint version which does not support
+                            // model two way bindings yet.
+                            checked <=> dvdbnd.checked;
+                            toggled() => dvdbnd-checked(i);
+                        }
+                    }
+                }
+            }
+        }
+
+        mount-browse := BrowsePath {
+            name: "Mount point";
+            path <=> mount-path;
+        }
+
+        HorizontalLayout {
+            height: 24px;
+
+            mount-button := Button {
+                text: "Mount filesystem";
+            }
+        }
+    }
+
+    if about-open: AboutWindow {
+        closed() => {
+            about-open = false;
+        }
+    }
+}

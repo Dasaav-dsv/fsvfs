@@ -5,12 +5,22 @@ edition = "2024"
 authors = ["Dasaav"]
 license = "MIT OR Apache-2.0"
 
+[workspace]
+members = ["gui"]
+resolver = "3"
+
+[workspace.dependencies]
+color-eyre = "0.6.5"
+futures-util = { version = "0.3.32", default-features = false, features = [
+    "std",
+] }
+
 [dependencies]
 aes = "0.9.0"
 async-trait = "0.1.89"
 base64 = "0.22.1"
 clap = { version = "4.6.1", features = ["derive"] }
-color-eyre = "0.6.5"
+color-eyre.workspace = true
 compio = { version = "0.19.0", default-features = false, features = [
     "dispatcher",
     "fs",
@@ -23,11 +33,15 @@ ctrlc = { version = "3.5.2", features = ["termination"] }
 eytzinger = { version = "1.1.2", default-features = false, features = [
     "branchless",
 ] }
-futures-util = "0.3.32"
+futures-util.workspace = true
 fxhash = "0.2.1"
 heed = { version = "0.22.1", default-features = false }
 indexmap = "2.14.0"
-lz4_flex = { version = "0.13.1", default-features = false, features = ["checked-decode", "safe-decode", "std"] }
+lz4_flex = { version = "0.13.1", default-features = false, features = [
+    "checked-decode",
+    "safe-decode",
+    "std",
+] }
 malachite = { version = "0.9.1", default-features = false, features = [
     "malachite-nz",
     "naturals_and_integers",
@@ -73,3 +87,8 @@ opt-level = 3
 
 [profile.test.package.xxhash-rust]
 opt-level = 3
+
+[profile.release]
+opt-level = "z"
+codegen-units = 1
+lto = true

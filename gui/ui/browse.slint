@@ -1,0 +1,37 @@
+import { Button, LineEdit } from "std-widgets.slint";
+
+import { VerticalBorderLayout } from "layout.slint";
+
+export component BrowsePath inherits VerticalBorderLayout {
+    in property <string> name;
+    in-out property path <=> path-edit.text;
+
+    callback browse() -> string;
+
+    HorizontalLayout {
+        padding: 8px;
+        height: 36px;
+        spacing: 4px;
+
+        Text {
+            text: "📂     \{name}";
+            font-size: 9.5pt;
+            font-weight: FontWeight.thin;
+            vertical-alignment: center;
+            min-width: 98px;
+        }
+
+        path-edit := LineEdit {
+            placeholder-text: "Enter or browse path...";
+            font-italic: true;
+        }
+
+        Button {
+            text: "Browse";
+            height: 21px;
+            clicked => {
+                path-edit.text = browse();
+            }
+        }
+    }
+}
