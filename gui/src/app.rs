@@ -34,6 +34,8 @@ impl App {
 
         app.bind(AppWindow::on_cache_clear, App::cache_clear);
 
+        app.bind(AppWindow::on_game_dir_browse, App::game_dir_browse);
+
         app.on_dvdbnd_checked({
             let app = app.as_weak();
             move |i| {
@@ -161,6 +163,10 @@ impl App {
             .await?;
 
         Ok(())
+    }
+
+    fn game_dir_browse(self) -> impl Future<Output = eyre::Result<()>> {
+        self.dir_browse(AppWindow::set_current_game_dir)
     }
 
     async fn dir_browse(self, f: impl FnOnce(&AppWindow, SharedString)) -> eyre::Result<()> {

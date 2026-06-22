@@ -26,15 +26,17 @@ export component AppWindow inherits Window {
     preferred-width: 720px;
     preferred-height: 480px;
 
-    in-out property <string> keys-path;
-    in-out property <string> dict-path;
-    in-out property <string> cache-path;
-    in-out property <bool> use-cache;
+    in-out property keys-path <=> keys-browse.path;
+    in-out property dict-path <=> dict-browse.path;
+    in-out property cache-path <=> cache-browse.path;
+    in-out property use-cache <=> cache-use-check.checked;
 
     in-out property <GameDirs> game-dirs;
+    in-out property current-game-dir <=> game-dir-browse-combo.current-value;
+
     in-out property <[DvdbndCheck]> dvdbnds;
 
-    in-out property <string> mount-path;
+    in-out property mount-path <=> mount-browse.path;
 
     callback menu-open();
     callback menu-save();
@@ -45,7 +47,8 @@ export component AppWindow inherits Window {
 
     callback cache-clear <=> cache-clear-button.clicked;
 
-    callback dvdbnd-browse-clicked <=> dvdbnd-browse-button.clicked;
+    callback game-dir-browse <=> game-dir-browse-button.clicked;
+
     callback dvdbnd-checked(int);
 
     callback mount-browse <=> mount-browse.browse;
@@ -91,19 +94,16 @@ export component AppWindow inherits Window {
 
         keys-browse := BrowsePath {
             name: "Keys";
-            path <=> keys-path;
             placeholder-path: "(Default)";
         }
 
         dict-browse := BrowsePath {
             name: "Dictionary";
-            path <=> dict-path;
             placeholder-path: "(Default)";
         }
 
         cache-browse := BrowsePath {
             name: "Cache";
-            path <=> cache-path;
             placeholder-path: "(Default)";
 
             HorizontalLayout {
@@ -115,7 +115,6 @@ export component AppWindow inherits Window {
 
                 cache-use-check := CheckBox {
                     text: "Use cache";
-                    checked <=> use-cache;
                 }
 
                 cache-clear-button := Button {
@@ -139,13 +138,13 @@ export component AppWindow inherits Window {
                 GridLayout {
                     spacing: 4px;
 
-                    dvdbnd-browse-combo := ComboBox {
+                    game-dir-browse-combo := ComboBox {
                         height: 24px;
                         model <=> game-dirs.dirs;
                         current-index <=> game-dirs.active-index;
                     }
 
-                    dvdbnd-browse-button := Button {
+                    game-dir-browse-button := Button {
                         col: 1;
                         text: "Browse";
                         height: 24px;
@@ -171,7 +170,6 @@ export component AppWindow inherits Window {
 
         mount-browse := BrowsePath {
             name: "Mount point";
-            path <=> mount-path;
         }
 
         HorizontalLayout {
