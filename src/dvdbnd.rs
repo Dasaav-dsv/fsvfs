@@ -5,6 +5,7 @@ use std::{
     fs::{self, DirEntry},
     io, iter,
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
 use color_eyre::eyre;
@@ -93,15 +94,19 @@ pub fn mount_from_args(args: DvdbndArgs) -> eyre::Result<()> {
     )
 }
 
-fn app_dir() -> PathBuf {
-    if let Some(mut path) = env::args_os().next().map(PathBuf::from)
-        && path.pop()
-    {
-        path
-    } else {
-        tracing::warn!("argv[0] is not set?");
-        PathBuf::from(".")
-    }
+fn app_dir() -> &'static Path {
+    static PATH: LazyLock<PathBuf> = LazyLock::new(|| {
+        if let Some(mut path) = env::args_os().next().map(PathBuf::from)
+            && path.pop()
+        {
+            path
+        } else {
+            tracing::warn!("argv[0] is not set?");
+            PathBuf::from(".")
+        }
+    });
+
+    &PATH
 }
 
 fn recursive_read_files(

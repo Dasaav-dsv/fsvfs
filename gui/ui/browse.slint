@@ -8,7 +8,7 @@ export component BrowsePath inherits VerticalBorderLayout {
     in-out property path <=> path-edit.text;
     in property placeholder-path <=> path-edit.placeholder-text;
 
-    callback browse() -> string;
+    callback browse <=> browse-button.clicked;
 
     HorizontalLayout {
         padding: 8px;
@@ -25,15 +25,11 @@ export component BrowsePath inherits VerticalBorderLayout {
 
         path-edit := LineEdit {
             placeholder-text: "Enter or browse path...";
-            font-italic: true;
         }
 
-        Button {
+        browse-button := Button {
             text: "Browse";
             height: 21px;
-            clicked => {
-                path-edit.text = browse();
-            }
         }
     }
 }

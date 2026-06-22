@@ -7,7 +7,7 @@ use serde::{
 };
 use slint::{ModelRc, SharedString};
 
-use crate::DvdbndCheck;
+use crate::{App, DvdbndCheck};
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct AppContext {
@@ -23,9 +23,33 @@ pub struct AppContext {
 
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "crate::GameDirs")]
-pub struct GameDirs {
-    pub dirs: ModelRc<SharedString>,
-    pub active_index: i32,
+struct GameDirs {
+    dirs: ModelRc<SharedString>,
+    active_index: i32,
+}
+
+impl App {
+    pub fn get_context(&self) -> AppContext {
+        AppContext {
+            mount_path: self.get_mount_path(),
+            keys_path: self.get_keys_path(),
+            dict_path: self.get_dict_path(),
+            cache_path: self.get_cache_path(),
+            use_cache: self.get_use_cache(),
+            game_dirs: self.get_game_dirs(),
+            dvdbnds: self.get_dvdbnds(),
+        }
+    }
+
+    pub fn set_context(&self, context: AppContext) {
+        self.set_mount_path(context.mount_path);
+        self.set_keys_path(context.keys_path);
+        self.set_dict_path(context.dict_path);
+        self.set_cache_path(context.cache_path);
+        self.set_use_cache(context.use_cache);
+        self.set_game_dirs(context.game_dirs);
+        self.set_dvdbnds(context.dvdbnds);
+    }
 }
 
 impl Serialize for DvdbndCheck {
