@@ -20,7 +20,7 @@ struct DvdbndCheck {
     checked: bool,
 }
 
-export component AppWindow inherits Window {
+export component App inherits Window {
     title: "fsvfs GUI";
 
     preferred-width: 720px;
@@ -92,16 +92,19 @@ export component AppWindow inherits Window {
         keys-browse := BrowsePath {
             name: "Keys";
             path <=> keys-path;
+            placeholder-path: "(Default)";
         }
 
         dict-browse := BrowsePath {
             name: "Dictionary";
             path <=> dict-path;
+            placeholder-path: "(Default)";
         }
 
         cache-browse := BrowsePath {
             name: "Cache";
             path <=> cache-path;
+            placeholder-path: "(Default)";
 
             HorizontalLayout {
                 alignment: end;

@@ -4,7 +4,9 @@ import { VerticalBorderLayout } from "layout.slint";
 
 export component BrowsePath inherits VerticalBorderLayout {
     in property <string> name;
+
     in-out property path <=> path-edit.text;
+    in property placeholder-path <=> path-edit.placeholder-text;
 
     callback browse() -> string;
 
