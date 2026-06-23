@@ -31,11 +31,13 @@
   "374320": {
     "name": "DarkSouls3_PC",
     "bhds": [
-      "Data1.bhd",
-      "Data2.bhd",
-      "Data3.bhd",
-      "Data4.bhd",
-      "Data5.bhd"
+      "Game/Data1.bhd",
+      "Game/Data2.bhd",
+      "Game/Data3.bhd",
+      "Game/Data4.bhd",
+      "Game/Data5.bhd",
+      "Game/DLC1.bhd",
+      "Game/DLC2.bhd"
     ]
   },
   "814380": {
@@ -61,6 +63,7 @@
       "Game/Data1.bhd",
       "Game/Data2.bhd",
       "Game/Data3.bhd",
+      "Game/Debug.bhd",
       "Game/DLC.bhd",
       "Game/sd/sd.bhd",
       "Game/sd/sd_dlc02.bhd"
@@ -83,6 +86,7 @@
       "Game/data1.bhd",
       "Game/data2.bhd",
       "Game/data3.bhd",
+      "Game/dlc01.bhd",
       "Game/sd/sd.bhd",
       "Game/sd/sd_dlc01.bhd"
     ]

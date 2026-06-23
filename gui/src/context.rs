@@ -1,138 +1,83 @@
-use std::fmt;
+use serde::{Deserialize, Serialize};
+use slint::{Model, ModelRc, SharedString, VecModel};
 
-use serde::{
-    Deserialize, Serialize,
-    de::{self, MapAccess, SeqAccess, Visitor},
-    ser::SerializeStruct,
-};
-use slint::{ModelRc, SharedString};
-
-use crate::{App, DvdbndCheck};
+use crate::App;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct AppContext {
-    pub mount_point: SharedString,
-    pub keys_path: SharedString,
-    pub dict_path: SharedString,
-    pub cache_path: SharedString,
+    pub mount_point: String,
+    pub keys_path: String,
+    pub dict_path: String,
+    pub cache_path: String,
     pub use_cache: bool,
-    #[serde(with = "GameDirs")]
-    pub game_dirs: crate::GameDirs,
-    pub current_game_dir: SharedString,
-    pub game_name: SharedString,
-    pub dvdbnds: ModelRc<DvdbndCheck>,
+    pub game_dirs: Vec<String>,
+    pub game_dir_index: u32,
+    pub current_game_dir: String,
+    pub game_name: String,
+    pub bhds: Vec<BhdCheck>,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "crate::GameDirs")]
-struct GameDirs {
-    dirs: ModelRc<SharedString>,
-    active_index: i32,
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct BhdCheck {
+    pub name: String,
+    pub checked: bool,
 }
 
 impl App {
     pub fn get_context(&self) -> AppContext {
+        let game_dirs = self.get_game_dirs();
+
         AppContext {
-            mount_point: self.get_mount_point(),
-            keys_path: self.get_keys_path(),
-            dict_path: self.get_dict_path(),
-            cache_path: self.get_cache_path(),
+            mount_point: self.get_mount_point().into(),
+            keys_path: self.get_keys_path().into(),
+            dict_path: self.get_dict_path().into(),
+            cache_path: self.get_cache_path().into(),
             use_cache: self.get_use_cache(),
-            game_dirs: self.get_game_dirs(),
-            current_game_dir: self.get_current_game_dir(),
-            game_name: self.get_game_name(),
-            dvdbnds: self.get_dvdbnds(),
+            game_dirs: game_dirs.dirs.iter().map(String::from).collect(),
+            game_dir_index: game_dirs.active_index.max(0).cast_unsigned(),
+            current_game_dir: self.get_current_game_dir().into(),
+            game_name: self.get_game_name().into(),
+            bhds: self
+                .get_bhds()
+                .iter()
+                .map(|bhd| BhdCheck {
+                    name: bhd.name.into(),
+                    checked: bhd.checked,
+                })
+                .collect(),
         }
     }
 
     pub fn set_context(&self, context: AppContext) {
-        self.set_mount_point(context.mount_point);
-        self.set_keys_path(context.keys_path);
-        self.set_dict_path(context.dict_path);
-        self.set_cache_path(context.cache_path);
+        self.set_mount_point(context.mount_point.into());
+        self.set_keys_path(context.keys_path.into());
+        self.set_dict_path(context.dict_path.into());
+        self.set_cache_path(context.cache_path.into());
         self.set_use_cache(context.use_cache);
-        self.set_game_dirs(context.game_dirs);
-        self.set_current_game_dir(context.current_game_dir);
-        self.set_game_name(context.game_name);
-        self.set_dvdbnds(context.dvdbnds);
-    }
-}
 
-impl Serialize for DvdbndCheck {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut state = serializer.serialize_struct("DvdbndCheck", 2)?;
-        state.serialize_field("name", &self.name)?;
-        state.serialize_field("checked", &self.checked)?;
-        state.end()
-    }
-}
+        let game_dirs = context
+            .game_dirs
+            .iter()
+            .map(|dir| dir.as_str().into())
+            .collect::<VecModel<SharedString>>();
 
-impl<'de> Deserialize<'de> for DvdbndCheck {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(field_identifier, rename_all = "lowercase")]
-        enum Field {
-            Name,
-            Checked,
-        }
+        self.set_game_dirs(crate::GameDirs {
+            dirs: ModelRc::new(game_dirs),
+            active_index: context.game_dir_index.cast_signed().max(0),
+        });
 
-        struct DvdbndCheckVisitor;
+        self.set_current_game_dir(context.current_game_dir.into());
+        self.set_game_name(context.game_name.into());
 
-        impl<'de> Visitor<'de> for DvdbndCheckVisitor {
-            type Value = DvdbndCheck;
+        let bhds = context
+            .bhds
+            .iter()
+            .map(|bhd| crate::BhdCheck {
+                name: bhd.name.as_str().into(),
+                checked: bhd.checked,
+            })
+            .collect::<VecModel<_>>();
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("struct Duration")
-            }
-
-            fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
-            where
-                V: SeqAccess<'de>,
-            {
-                let name = seq
-                    .next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-                let checked = seq
-                    .next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-                Ok(DvdbndCheck { name, checked })
-            }
-
-            fn visit_map<V>(self, mut map: V) -> Result<Self::Value, V::Error>
-            where
-                V: MapAccess<'de>,
-            {
-                let mut name = None;
-                let mut checked = None;
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        Field::Name => {
-                            if name.is_some() {
-                                return Err(de::Error::duplicate_field("name"));
-                            }
-                            name = Some(map.next_value()?);
-                        }
-                        Field::Checked => {
-                            if checked.is_some() {
-                                return Err(de::Error::duplicate_field("checked"));
-                            }
-                            checked = Some(map.next_value()?);
-                        }
-                    }
-                }
-                let name = name.ok_or_else(|| de::Error::missing_field("name"))?;
-                let checked = checked.ok_or_else(|| de::Error::missing_field("checked"))?;
-                Ok(DvdbndCheck { name, checked })
-            }
-        }
-
-        const FIELDS: &[&str] = &["name", "checked"];
-        deserializer.deserialize_struct("Duration", FIELDS, DvdbndCheckVisitor)
+        self.set_bhds(ModelRc::new(bhds));
     }
 }

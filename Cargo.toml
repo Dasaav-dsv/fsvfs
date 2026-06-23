@@ -10,19 +10,20 @@ members = ["gui"]
 resolver = "3"
 
 [workspace.dependencies]
-color-eyre = "0.6.5"
+eyre = "0.6.12"
 futures-util = { version = "0.3.32", default-features = false, features = [
     "std",
 ] }
-fxhash = "0.2.1"
+normpath = "1.5.1"
 steamlocate = "2.1.0"
+windows = "=0.62.2"
 
 [dependencies]
 aes = "0.9.0"
 async-trait = "0.1.89"
 base64 = "0.22.1"
 clap = { version = "4.6.1", features = ["derive"] }
-color-eyre.workspace = true
+color-eyre = "0.6.5"
 compio = { version = "0.19.0", default-features = false, features = [
     "dispatcher",
     "fs",
@@ -32,11 +33,12 @@ compio = { version = "0.19.0", default-features = false, features = [
     "runtime",
 ] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
+eyre.workspace = true
 eytzinger = { version = "1.1.2", default-features = false, features = [
     "branchless",
 ] }
 futures-util.workspace = true
-fxhash.workspace = true
+fxhash = "0.2.1"
 heed = { version = "0.22.1", default-features = false }
 indexmap = "2.14.0"
 lz4_flex = { version = "0.13.1", default-features = false, features = [
@@ -69,7 +71,7 @@ libc = "0.2.186"
 [target.'cfg(windows)'.dependencies]
 papaya = "0.2.4"
 tempfile = { version = "3.27.0", default-features = false }
-windows = { version = "0.62.2", features = [
+windows = { workspace = true, features = [
     "Win32_Storage_FileSystem",
     "Win32_Storage_ProjectedFileSystem",
     "Win32_System_Console",

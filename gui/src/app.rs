@@ -1,25 +1,25 @@
 use std::{
     cell::{OnceCell, RefCell},
-    env,
+    collections::BTreeMap,
     ffi::OsStr,
     io,
     ops::Deref,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     rc::Rc,
-    sync::LazyLock,
 };
 
 use async_io::block_on;
 use blocking::unblock;
-use color_eyre::eyre::{self, Context, OptionExt};
-use futures_util::{FutureExt, StreamExt, TryStreamExt, stream, try_join};
-use fxhash::FxHashMap;
+use eyre::{Context, OptionExt};
+use futures_util::{FutureExt, StreamExt, TryStreamExt, future, stream, try_join};
 use rfd::AsyncFileDialog;
-use slint::{ComponentHandle, Model, ModelExt, SharedString, spawn_local};
+use slint::{ComponentHandle, Model, ModelExt, ModelRc, SharedString, spawn_local};
 
+#[cfg(windows)]
+use crate::windows::ChildKiller;
 use crate::{
-    AppWindow,
+    AppWindow, BhdCheck, GameDirs,
     context::AppContext,
     error_popup,
     steam::{Game, LocateConfig},
@@ -28,10 +28,14 @@ use crate::{
 pub struct App {
     window: AppWindow,
     locate_config: OnceCell<LocateConfig>,
-    bhds: RefCell<FxHashMap<PathBuf, Rc<Game>>>,
+    bhds: RefCell<BTreeMap<PathBuf, Rc<Game>>>,
+    #[cfg(windows)]
+    child_killer: ChildKiller,
 }
 
 impl App {
+    const GAME_DIR_PLACEHOLDER: &str = "(Select or browse a game directory)";
+
     #[inline]
     pub fn new() -> eyre::Result<Rc<Self>> {
         let window = AppWindow::new()?;
@@ -40,10 +44,13 @@ impl App {
             window,
             locate_config: OnceCell::new(),
             bhds: RefCell::default(),
+            #[cfg(windows)]
+            child_killer: ChildKiller::new()?,
         });
 
         app.set_context(AppContext {
             use_cache: true,
+            current_game_dir: Self::GAME_DIR_PLACEHOLDER.into(),
             ..Default::default()
         });
 
@@ -58,26 +65,10 @@ impl App {
 
         app.bind(AppWindow::on_cache_cleared, App::clear_cache);
 
-        // app.bind(AppWindow::on_game_dir_selected, f);
-        // app.bind(AppWindow::on_game_dir_browsed, App::browse_game_dir);
+        app.bind(AppWindow::on_game_dir_selected, App::select_game_dir);
+        app.bind(AppWindow::on_game_dir_browsed, App::browse_game_dir);
 
-        app.on_dvdbnd_checked({
-            let app = app.as_weak();
-            move |i| {
-                if i != 0 {
-                    return;
-                }
-
-                let dvdbnds = app.unwrap().get_dvdbnds();
-                let checked = dvdbnds.row_data(0).unwrap().checked;
-
-                for i in 1..dvdbnds.row_count() {
-                    let mut dvdbnd = dvdbnds.row_data_tracked(i).unwrap();
-                    dvdbnd.checked = checked;
-                    dvdbnds.set_row_data(i, dvdbnd);
-                }
-            }
-        });
+        app.bind_on_bhd_checked();
 
         app.bind(AppWindow::on_mount_browsed, App::browse_mount);
         app.bind(AppWindow::on_mounted, App::mount);
@@ -96,10 +87,9 @@ impl App {
 
         let f = Box::new(move || {
             let app = app.upgrade().unwrap();
+
             spawn_local(f(app).map(|res| {
-                if let Err(e) = res {
-                    error_popup(e);
-                }
+                let _ = res.inspect_err(error_popup);
             }))
             .unwrap();
         });
@@ -123,27 +113,11 @@ impl App {
         Ok(())
     }
 
-    fn app_dir() -> &'static Path {
-        static PATH: LazyLock<PathBuf> = LazyLock::new(|| {
-            if let Some(mut path) = env::args_os().next().map(PathBuf::from)
-                && path.pop()
-            {
-                path
-            } else {
-                PathBuf::from(".")
-            }
-        });
-
-        &PATH
-    }
-
-    async fn update_bhds(&self) -> eyre::Result<()> {
+    async fn update_bhds(self: &Rc<Self>) -> eyre::Result<()> {
         let locate_config = match self.locate_config.get() {
             Some(config) => config,
             None => {
-                let path = Self::app_dir().join("gui/bhds.json");
-
-                let json = async_fs::read_to_string(path).await?;
+                let json = async_fs::read_to_string("gui/bhds.json").await?;
                 let config = serde_json::from_str::<LocateConfig>(&json)?;
 
                 self.locate_config.get_or_init(move || config)
@@ -151,7 +125,24 @@ impl App {
         };
 
         let bhds = locate_config.locate_games().await?;
+
+        let dirs = bhds
+            .keys()
+            .filter_map(|dir| dir.to_str().map(SharedString::from))
+            .collect::<Vec<_>>();
+
         *self.bhds.borrow_mut() = bhds;
+
+        self.set_game_dirs(GameDirs {
+            active_index: 0,
+            dirs: ModelRc::from(dirs.as_slice()),
+        });
+
+        if let Some(first) = dirs.first() {
+            self.set_current_game_dir(first.clone());
+        }
+
+        self.clone().select_game_dir().await?;
 
         Ok(())
     }
@@ -199,10 +190,8 @@ impl App {
     }
 
     async fn clear_cache(self: Rc<Self>) -> eyre::Result<()> {
-        let path = match &*self.get_cache_path() {
-            "" => Self::app_dir().join("cache"),
-            path => PathBuf::from(path),
-        };
+        let path = self.get_cache_path();
+        let path = if path.is_empty() { "cache" } else { &*path };
 
         async_fs::read_dir(path)
             .await?
@@ -220,9 +209,78 @@ impl App {
         Ok(())
     }
 
-    async fn browse_game_dir(self: Rc<Self>) -> eyre::Result<()> {
-        self.browse_dir(AppWindow::set_current_game_dir).await?;
+    async fn select_game_dir(self: Rc<Self>) -> eyre::Result<()> {
+        let game_dir = self.get_current_game_dir();
+        let game_dir = Path::new(&game_dir);
+
+        if game_dir == Self::GAME_DIR_PLACEHOLDER {
+            return Ok(());
+        }
+
+        let game = self
+            .bhds
+            .borrow()
+            .get(game_dir)
+            .ok_or_eyre("selected game is not on the list?")?
+            .clone();
+
+        self.set_game_name(game.name.as_str().into());
+
+        let mut bhds = stream::iter(&game.bhds)
+            .filter_map(|bhd| {
+                let bhd_path = game_dir.join(bhd);
+                unblock(move || bhd_path.exists() && bhd_path.with_extension("bdt").exists()).map(
+                    move |exists| {
+                        exists.then_some(future::ready(BhdCheck {
+                            name: bhd.into(),
+                            checked: true,
+                        }))
+                    },
+                )
+            })
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await;
+
+        let first = BhdCheck {
+            name: slint::format!("({} BHDs)", bhds.len()),
+            checked: true,
+        };
+
+        bhds.insert(0, first);
+
+        self.set_bhds(bhds.as_slice().into());
+
         Ok(())
+    }
+
+    async fn browse_game_dir(self: Rc<Self>) -> eyre::Result<()> {
+        try_join!(
+            self.clone().browse_dir(AppWindow::set_current_game_dir),
+            self.update_bhds(),
+        )?;
+
+        Err(eyre::eyre!("not yet implemented"))
+    }
+
+    fn bind_on_bhd_checked(self: &Rc<Self>) {
+        self.on_bhd_checked({
+            let app = self.as_weak();
+            move |i| {
+                if i != 0 {
+                    return;
+                }
+
+                let bhds = app.unwrap().get_bhds();
+                let checked = bhds.row_data(0).unwrap().checked;
+
+                for i in 1..bhds.row_count() {
+                    let mut bhd = bhds.row_data_tracked(i).unwrap();
+                    bhd.checked = checked;
+                    bhds.set_row_data(i, bhd);
+                }
+            }
+        });
     }
 
     fn browse_mount(self: Rc<Self>) -> impl Future<Output = eyre::Result<()>> {
@@ -231,15 +289,18 @@ impl App {
 
     async fn mount(self: Rc<Self>) -> eyre::Result<()> {
         let context = self.get_context();
-        let app_dir = Self::app_dir();
 
-        if context.mount_point == "" {
+        if context.current_game_dir == Self::GAME_DIR_PLACEHOLDER {
+            return Err(eyre::eyre!("you must select or browse a game directory"));
+        }
+
+        if context.mount_point.is_empty() {
             return Err(eyre::eyre!(
                 "mount point must be an existing, empty directory"
             ));
         }
 
-        if async_fs::read_dir(app_dir.join(context.mount_point.as_str()))
+        if async_fs::read_dir(&context.mount_point)
             .await
             .with_context(|| "mount point must be an existing directory")?
             .next()
@@ -249,9 +310,9 @@ impl App {
             return Err(eyre::eyre!("mount point must be an empty directory"));
         }
 
-        async fn check_is_dir(dir: &str, app_dir: &Path, name: &'static str) -> eyre::Result<()> {
+        async fn check_is_dir(dir: &str, name: &'static str) -> eyre::Result<()> {
             if !dir.is_empty()
-                && async_fs::metadata(app_dir.join(dir))
+                && async_fs::metadata(dir)
                     .await
                     .ok()
                     .is_none_or(|metadata| !metadata.is_dir())
@@ -263,64 +324,71 @@ impl App {
         }
 
         try_join!(
-            check_is_dir(&context.keys_path, app_dir, "keys"),
-            check_is_dir(&context.dict_path, app_dir, "dictionary"),
+            check_is_dir(&context.keys_path, "keys"),
+            check_is_dir(&context.dict_path, "dictionary"),
             async {
                 if context.use_cache {
-                    check_is_dir(&context.cache_path, app_dir, "cache").await
+                    check_is_dir(&context.cache_path, "cache").await
                 } else {
                     Ok(())
                 }
             }
         )?;
 
-        let game_root = Path::new(context.current_game_dir.as_str());
-
         let bhd_paths = context
-            .dvdbnds
+            .bhds
             .iter()
             .skip(1)
-            .filter_map(|dvdbnd| dvdbnd.checked.then(|| game_root.join(dvdbnd.name.as_str())))
+            .filter(|&bhd| bhd.checked)
+            .map(|bhd| {
+                format!(
+                    "{}/{}",
+                    context.current_game_dir.as_str(),
+                    bhd.name.as_str()
+                )
+            })
             .collect::<Vec<_>>();
 
         if bhd_paths.is_empty() {
-            return Err(eyre::eyre!("at least one DVDBND must be checked"));
+            return Err(eyre::eyre!("at least one BHD must be checked"));
         }
 
         if stream::iter(&bhd_paths)
             .any(|path| {
-                let path = path.clone();
+                let path = PathBuf::from(path);
                 unblock(move || !path.exists())
             })
             .await
         {
-            return Err(eyre::eyre!("all DVDBND paths must exist and be accessible"));
+            return Err(eyre::eyre!("all BHD paths must exist and be accessible"));
         }
 
-        let fsvfs = app_dir.join(cfg_select! {
-            windows => "fsvfs.exe",
-            _ => "fsvfs",
+        // TODO: pipe errors to stderr.
+        let mut command = Command::new(cfg_select! {
+            windows => ".\\fsvfs.exe",
+            unix => "./fsvfs",
         });
 
-        // TODO: pipe errors to stderr.
-        let mut command = Command::new(fsvfs);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
 
-        command.current_dir(app_dir).arg("dvdbnd");
+        command.arg("dvdbnd");
+
+        command.args(["-m", &context.mount_point]);
 
         if !context.keys_path.is_empty() {
-            let keys_dir = app_dir.join(context.keys_path);
-            command.args([OsStr::new("-k"), keys_dir.as_os_str()]);
+            command.args(["-k", &context.keys_path]);
         }
 
         if !context.dict_path.is_empty() {
-            let dict_dir = app_dir.join(context.dict_path);
-            command.args([OsStr::new("-d"), dict_dir.as_os_str()]);
+            command.args(["-d", &context.dict_path]);
         }
 
         if context.use_cache {
             if !context.cache_path.is_empty() {
-                let cache_dir = app_dir.join(context.cache_path);
-                command.args([OsStr::new("-c"), cache_dir.as_os_str()]);
+                command.args(["-c", &context.cache_path]);
             }
         } else {
             command.arg("--no-cache");
@@ -330,12 +398,22 @@ impl App {
             command.args(["-g", &context.game_name]);
         }
 
-        let mount_point = app_dir.join(context.mount_point.as_str());
-        command.args([OsStr::new("-m"), mount_point.as_os_str()]);
+        command.args(bhd_paths);
 
-        command.args(&bhd_paths);
+        let _child = unblock(move || command.spawn()).await?;
 
-        command.spawn()?;
+        #[cfg(windows)]
+        self.child_killer.kill_on_exit(&_child)?;
+
+        let mut command = Command::new(cfg_select! {
+            windows => "explorer.exe",
+            target_os = "macos" => "open",
+            unix => "xdg-open",
+        });
+
+        command.arg(&context.mount_point);
+
+        unblock(move || command.spawn()).await?;
 
         Ok(())
     }
