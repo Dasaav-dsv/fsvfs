@@ -8,14 +8,15 @@ Conveniently manages multiple mounts and mount configurations. Detects installed
 
 ## Settings
 
-- *(Advanced user)* **Keys**: path to directory or nested directories with public RSA keys to use.
-- *(Advanced user)* **Dictionary**: path to directory or nested directories with hash dictionaries to use.
-- *(Advanced user)* **Cache**: path to directory where to store cached metadata to speed up DVDBND processing.
+- **Keys**: path to directory or nested directories with public RSA keys to use.
+- **Dictionary**: path to directory or nested directories with hash dictionaries to use.
+- **Cache**: path to directory where to store cached metadata to speed up DVDBND processing.
     **Use cache**: (if checked) read and store metadate to this cache.
     **Clear cache**: delete all cached metadata.
 - **Select directory**: choose from a list of automatically detected Steam game directories or **Browse**.
-    **Check** the DVDBNDs you'd like to mount.
+    **Check** the DVDBNDs you would like to mount.
 - **Mount point**: path to an *EXISTING* and *EMPTY* directory.
+- **Game**: determines which keys and dictionary to use.
 - **Mount filesystem**: mount **checked** DVDBNDs at the **mount point**, *which must be set*.
 
 ## Controls
