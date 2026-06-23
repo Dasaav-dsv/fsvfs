@@ -1918,6 +1918,7 @@ dependencies = [
  "compio",
  "ctrlc",
  "embed-manifest",
+ "eyre",
  "eytzinger",
  "fuser",
  "futures-util",
@@ -1948,15 +1949,18 @@ dependencies = [
  "async-fs",
  "async-io",
  "blocking",
- "color-eyre",
+ "eyre",
  "futures-util",
- "fxhash",
+ "normpath",
+ "papaya",
  "rfd",
  "serde",
  "serde_json",
  "slint",
  "slint-build",
  "steamlocate",
+ "tempfile",
+ "windows",
 ]
 
 [[package]]
@@ -2566,7 +2570,6 @@ dependencies = [
  "rgb",
  "scoped-tls-hkt",
  "scopeguard",
- "serde",
  "skrifa",
  "slab",
  "strum",
@@ -3608,6 +3611,15 @@ name = "noop_proc_macro"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
+
+[[package]]
+name = "normpath"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9985ef7269fa99f3b12437bb698381da2428743ab90f20393f399fa14cab21a"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "nu-ansi-term"

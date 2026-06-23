@@ -1,9 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf, rc::Rc, sync::Arc};
 
 use blocking::unblock;
-use color_eyre::eyre;
 use futures_util::{StreamExt, stream};
-use fxhash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use steamlocate::locate_all;
 
@@ -17,10 +15,10 @@ pub struct Game {
 }
 
 impl LocateConfig {
-    pub async fn locate_games(&self) -> eyre::Result<FxHashMap<PathBuf, Rc<Game>>> {
+    pub async fn locate_games(&self) -> eyre::Result<BTreeMap<PathBuf, Rc<Game>>> {
         let steam_dirs = unblock(locate_all).await?;
 
-        let mut games = FxHashMap::default();
+        let mut games = BTreeMap::default();
 
         for steam_dir in steam_dirs {
             let libraries = unblock(move || {

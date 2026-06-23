@@ -15,7 +15,7 @@ struct GameDirs {
     active-index: int,
 }
 
-struct DvdbndCheck {
+struct BhdCheck {
     name: string,
     checked: bool,
 }
@@ -34,7 +34,7 @@ export component AppWindow inherits Window {
     in-out property <GameDirs> game-dirs;
     in-out property current-game-dir <=> game-dir-browse-combo.current-value;
 
-    in-out property <[DvdbndCheck]> dvdbnds;
+    in-out property <[BhdCheck]> bhds;
 
     in-out property mount-point <=> mount-browse.path;
     in-out property game-name <=> game-edit.text;
@@ -51,7 +51,7 @@ export component AppWindow inherits Window {
     callback game-dir-selected();
     callback game-dir-browsed <=> game-dir-browse-button.clicked;
 
-    callback dvdbnd-checked(int);
+    callback bhd-checked(int);
 
     callback mount-browsed <=> mount-browse.browsed;
     callback mounted <=> mount-button.clicked;
@@ -158,14 +158,14 @@ export component AppWindow inherits Window {
                         row: 1;
                         colspan: 2;
 
-                        for dvdbnd[i] in dvdbnds: CheckBox {
+                        for bhd[i] in bhds: CheckBox {
                             height: 20px;
-                            text: dvdbnd.name;
+                            text: bhd.name;
                             // FIXME: uncomment for builds, until Slint 1.17.0 releases.
                             // Slint viewer is built with an older Slint version which does not support
                             // model two way bindings yet.
-                            checked <=> dvdbnd.checked;
-                            toggled() => dvdbnd-checked(i);
+                            checked <=> bhd.checked;
+                            toggled() => bhd-checked(i);
                         }
                     }
                 }
