@@ -7,6 +7,7 @@ use crate::app::App;
 
 mod app;
 mod context;
+mod steam;
 
 slint::include_modules!();
 

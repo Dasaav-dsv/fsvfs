@@ -14,6 +14,8 @@ color-eyre = "0.6.5"
 futures-util = { version = "0.3.32", default-features = false, features = [
     "std",
 ] }
+fxhash = "0.2.1"
+steamlocate = "2.1.0"
 
 [dependencies]
 aes = "0.9.0"
@@ -34,7 +36,7 @@ eytzinger = { version = "1.1.2", default-features = false, features = [
     "branchless",
 ] }
 futures-util.workspace = true
-fxhash = "0.2.1"
+fxhash.workspace = true
 heed = { version = "0.22.1", default-features = false }
 indexmap = "2.14.0"
 lz4_flex = { version = "0.13.1", default-features = false, features = [
@@ -79,7 +81,7 @@ windows = { version = "0.62.2", features = [
 embed-manifest = "1.5.0"
 
 [dev-dependencies]
-steamlocate = "2.1.0"
+steamlocate.workspace = true
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [profile.test.package.malachite]

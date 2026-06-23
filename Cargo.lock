@@ -1946,13 +1946,17 @@ name = "fsvfs-gui"
 version = "0.1.0"
 dependencies = [
  "async-fs",
+ "async-io",
+ "blocking",
  "color-eyre",
  "futures-util",
+ "fxhash",
  "rfd",
  "serde",
  "serde_json",
  "slint",
  "slint-build",
+ "steamlocate",
 ]
 
 [[package]]

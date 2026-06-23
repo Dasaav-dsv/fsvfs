@@ -36,23 +36,25 @@ export component AppWindow inherits Window {
 
     in-out property <[DvdbndCheck]> dvdbnds;
 
-    in-out property mount-path <=> mount-browse.path;
+    in-out property mount-point <=> mount-browse.path;
+    in-out property game-name <=> game-edit.text;
 
-    callback menu-open();
-    callback menu-save();
+    callback menu-opened();
+    callback menu-saved();
 
-    callback keys-browse <=> keys-browse.browse;
-    callback dict-browse <=> dict-browse.browse;
-    callback cache-browse <=> cache-browse.browse;
+    callback keys-browsed <=> keys-browse.browsed;
+    callback dict-browsed <=> dict-browse.browsed;
+    callback cache-browsed <=> cache-browse.browsed;
 
-    callback cache-clear <=> cache-clear-button.clicked;
+    callback cache-cleared <=> cache-clear-button.clicked;
 
-    callback game-dir-browse <=> game-dir-browse-button.clicked;
+    callback game-dir-selected();
+    callback game-dir-browsed <=> game-dir-browse-button.clicked;
 
     callback dvdbnd-checked(int);
 
-    callback mount-browse <=> mount-browse.browse;
-    callback mount <=> mount-button.clicked;
+    callback mount-browsed <=> mount-browse.browsed;
+    callback mounted <=> mount-button.clicked;
 
     private property <bool> about-open;
 
@@ -63,13 +65,13 @@ export component AppWindow inherits Window {
             MenuItem {
                 title: "Open configuration";
                 shortcut: @keys(Control+O);
-                activated => menu-open();
+                activated => menu-opened();
             }
 
             MenuItem {
                 title: "Save configuration";
                 shortcut: @keys(Control+S);
-                activated => menu-save();
+                activated => menu-saved();
             }
         }
 
@@ -108,6 +110,7 @@ export component AppWindow inherits Window {
 
             HorizontalLayout {
                 alignment: end;
+                padding-top: 1px;
                 padding-left: 6px;
                 padding-right: 8px;
                 padding-bottom: 6px;
@@ -130,7 +133,7 @@ export component AppWindow inherits Window {
                 spacing: 8px;
 
                 Text {
-                    text: "📂     Select directory:";
+                    text: "📂     Select game directory:";
                     font-size: 9.5pt;
                     font-weight: FontWeight.thin;
                 }
@@ -142,6 +145,7 @@ export component AppWindow inherits Window {
                         height: 24px;
                         model <=> game-dirs.dirs;
                         current-index <=> game-dirs.active-index;
+                        selected(_) => game-dir-selected();
                     }
 
                     game-dir-browse-button := Button {
@@ -170,13 +174,36 @@ export component AppWindow inherits Window {
 
         mount-browse := BrowsePath {
             name: "Mount point";
-        }
 
-        HorizontalLayout {
-            height: 24px;
+            HorizontalLayout {
+                padding-top: 1px;
+                padding-left: 6px;
+                padding-right: 8px;
+                padding-bottom: 6px;
+                spacing: 4px;
 
-            mount-button := Button {
-                text: "Mount filesystem";
+                HorizontalLayout {
+                    padding-top: 1px;
+                    spacing: 6px;
+                    height: 22px;
+
+                    Text {
+                        text: "🎮     Game";
+                        font-size: 9.5pt;
+                        font-weight: FontWeight.thin;
+                        vertical-alignment: center;
+                        min-width: 98px;
+                    }
+
+                    game-edit := LineEdit {
+                        placeholder-text: "(Autodetect)";
+                    }
+                }
+
+                mount-button := Button {
+                    text: "Mount filesystem";
+                    height: 24px;
+                }
             }
         }
     }
