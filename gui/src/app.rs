@@ -375,17 +375,24 @@ impl App {
         self.on_bhd_checked({
             let app = self.as_weak();
             move |i| {
-                if i != 0 {
-                    return;
-                }
-
                 let bhds = app.unwrap().get_bhds();
-                let checked = bhds.row_data(0).unwrap().checked;
 
-                for i in 1..bhds.row_count() {
-                    let mut bhd = bhds.row_data_tracked(i).unwrap();
-                    bhd.checked = checked;
-                    bhds.set_row_data(i, bhd);
+                let Some(mut first) = bhds.row_data(0) else {
+                    return;
+                };
+
+                if i == 0 {
+                    for i in 1..bhds.row_count() {
+                        let mut bhd = bhds.row_data_tracked(i).unwrap();
+                        bhd.checked = first.checked;
+                        bhds.set_row_data(i, bhd);
+                    }
+                } else {
+                    first.checked =
+                        (1..bhds.row_count()).all(|i| bhds.row_data(i).unwrap().checked);
+
+                    bhds.model_tracker().track_row_data_changes(0);
+                    bhds.set_row_data(0, first);
                 }
             }
         });
