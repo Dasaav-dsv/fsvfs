@@ -15,7 +15,6 @@ use std::{
 
 use color_eyre::eyre::{self, eyre};
 use futures_util::{FutureExt, TryFutureExt};
-use fxhash::FxBuildHasher;
 use papaya::HashMap as PapayaMap;
 use tempfile::TempDir;
 use tracing::{info, warn};
@@ -44,6 +43,7 @@ use windows::{
     },
     core::{Error as WindowsError, GUID, HRESULT, HSTRING, PCWSTR, Result as WindowsResult, w},
 };
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use crate::{
     dvdbnd::{
@@ -58,7 +58,7 @@ use crate::{
 #[derive(Debug)]
 struct MountContext<F: DvdbndFilesystem> {
     mount: DvdbndMount<F>,
-    enumerations: PapayaMap<GUID, Arc<DirEnumeration>, FxBuildHasher>,
+    enumerations: PapayaMap<GUID, Arc<DirEnumeration>, Xxh3DefaultBuilder>,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     mountpoint: HSTRING,
     weak_ptr: AtomicPtr<Self>,
