@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     rc::Rc,
+    sync::Arc,
     time::Duration,
 };
 
@@ -14,6 +15,7 @@ use async_io::block_on;
 use blocking::unblock;
 use eyre::{Context, OptionExt};
 use futures_util::{FutureExt, StreamExt, TryStreamExt, future, stream, try_join};
+use fxhash::FxHashMap;
 use rfd::AsyncFileDialog;
 use slint::{ComponentHandle, Model, ModelExt, ModelRc, SharedString, spawn_local};
 
@@ -134,13 +136,16 @@ impl App {
 
         *self.bhds.borrow_mut() = bhds;
 
+        let game_dir = self.get_current_game_dir();
+        let active_index = dirs.iter().position(|dir| *dir == game_dir).unwrap_or(0);
+
         self.set_game_dirs(GameDirs {
-            active_index: 0,
+            active_index: active_index as i32,
             dirs: ModelRc::from(dirs.as_slice()),
         });
 
-        if let Some(first) = dirs.first() {
-            self.set_current_game_dir(first.clone());
+        if let Some(active) = dirs.get(active_index) {
+            self.set_current_game_dir(active.clone());
         }
 
         self.clone().select_game_dir().await?;
@@ -158,6 +163,8 @@ impl App {
             let context = serde_json::from_str(&json)?;
 
             self.set_context(context);
+
+            self.update_bhds().await?;
         }
 
         Ok(())
@@ -212,40 +219,66 @@ impl App {
 
     async fn select_game_dir(self: Rc<Self>) -> eyre::Result<()> {
         let game_dir = self.get_current_game_dir();
-        let game_dir = Path::new(&game_dir);
 
         if game_dir == Self::GAME_DIR_PLACEHOLDER {
             return Ok(());
         }
 
+        let game_dir_path = Path::new(&game_dir);
+
         let game = self
             .bhds
             .borrow()
-            .get(game_dir)
+            .get(game_dir_path)
             .ok_or_eyre("selected game is not on the list?")?
             .clone();
 
         self.set_game_name(game.name.as_str().into());
 
+        let bhds = self.get_bhds();
+
+        let previously_checked = bhds
+            .row_data(0)
+            .and_then(|first| {
+                (first.parent_dir == game_dir).then(|| {
+                    Arc::new(
+                        bhds.iter()
+                            .map(|bhd| (bhd.name, bhd.checked))
+                            .collect::<FxHashMap<_, _>>(),
+                    )
+                })
+            })
+            .unwrap_or_default();
+
         let mut bhds = stream::iter(&game.bhds)
             .filter_map(|bhd| {
-                let bhd_path = game_dir.join(bhd);
+                let bhd_path = game_dir_path.join(bhd);
+                let parent_dir = game_dir.clone();
+                let checked = previously_checked.clone();
+
                 unblock(move || bhd_path.exists() && bhd_path.with_extension("bdt").exists()).map(
                     move |exists| {
-                        exists.then_some(future::ready(BhdCheck {
-                            name: bhd.into(),
-                            checked: true,
-                        }))
+                        exists.then(|| {
+                            let name = SharedString::from(bhd);
+                            let checked = checked.get(&name).cloned().unwrap_or(checked.is_empty());
+
+                            future::ready(BhdCheck {
+                                name,
+                                parent_dir,
+                                checked,
+                            })
+                        })
                     },
                 )
             })
-            .buffer_unordered(8)
+            .buffer_unordered(usize::MAX)
             .collect::<Vec<_>>()
             .await;
 
         let first = BhdCheck {
             name: slint::format!("({} BHDs)", bhds.len()),
-            checked: true,
+            parent_dir: game_dir,
+            checked: bhds.iter().all(|bhd| bhd.checked),
         };
 
         bhds.insert(0, first);
@@ -366,8 +399,8 @@ impl App {
 
         // TODO: pipe errors to stderr.
         let mut command = Command::new(cfg_select! {
-            windows => ".\\fsvfs.exe",
             unix => "./fsvfs",
+            windows => ".\\fsvfs.exe",
         });
 
         #[cfg(windows)]

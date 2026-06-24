@@ -15,6 +15,7 @@ eyre = "0.6.12"
 futures-util = { version = "0.3.32", default-features = false, features = [
     "std",
 ] }
+fxhash = "0.2.1"
 normpath = "1.5.1"
 steamlocate = "2.1.0"
 windows = "=0.62.2"
@@ -39,7 +40,7 @@ eytzinger = { version = "1.1.2", default-features = false, features = [
     "branchless",
 ] }
 futures-util.workspace = true
-fxhash = "0.2.1"
+fxhash.workspace = true
 heed = { version = "0.22.1", default-features = false }
 indexmap = "2.14.0"
 lz4_flex = { version = "0.13.1", default-features = false, features = [

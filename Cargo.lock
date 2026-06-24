@@ -1926,6 +1926,7 @@ dependencies = [
  "embed-manifest",
  "eyre",
  "futures-util",
+ "fxhash",
  "normpath",
  "papaya",
  "rfd",
