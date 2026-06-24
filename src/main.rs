@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use clap::Parser;
 use color_eyre::eyre;
 use tracing::debug;
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use crate::cli::{Cli, Command};
 
@@ -17,6 +20,8 @@ mod unaligned;
 
 #[cfg(windows)]
 mod runas;
+
+type XxHashMap<K, V> = HashMap<K, V, Xxh3DefaultBuilder>;
 
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;

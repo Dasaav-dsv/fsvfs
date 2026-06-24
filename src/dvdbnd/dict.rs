@@ -1,21 +1,21 @@
 use std::{fs, path::Path};
 
 use color_eyre::eyre;
-use fxhash::FxHashMap;
 
 use crate::{
+    XxHashMap,
     dvdbnd::{prefix_and_parent_to_lowercase, recursive_read_files},
     hash::{hash_path32, hash_path64},
 };
 
 #[derive(Default, Debug)]
 pub struct Dictionary {
-    by_bnd: FxHashMap<Box<str>, String>,
+    by_bnd: XxHashMap<Box<str>, String>,
 }
 
 impl Dictionary {
     pub fn from_dir_and_game(dir: &Path, game: &str) -> eyre::Result<Self> {
-        let mut by_bnd = FxHashMap::default();
+        let mut by_bnd = XxHashMap::default();
 
         for file in recursive_read_files(dir)? {
             let file = file?;
@@ -37,11 +37,11 @@ impl Dictionary {
         Ok(Self { by_bnd })
     }
 
-    pub fn hash_paths32<'a>(&'a self, bnd_name: &str) -> FxHashMap<u32, &'a str> {
+    pub fn hash_paths32<'a>(&'a self, bnd_name: &str) -> XxHashMap<u32, &'a str> {
         self.hash_path_iter(bnd_name, hash_path32).collect()
     }
 
-    pub fn hash_paths64<'a>(&'a self, bnd_name: &str) -> FxHashMap<u64, &'a str> {
+    pub fn hash_paths64<'a>(&'a self, bnd_name: &str) -> XxHashMap<u64, &'a str> {
         self.hash_path_iter(bnd_name, hash_path64).collect()
     }
 

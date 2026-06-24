@@ -6,11 +6,11 @@ use std::{
 };
 
 use color_eyre::eyre;
-use fxhash::FxHashMap;
 use smallvec::{SmallVec, smallvec_inline};
 use zerocopy::{BE, LE, TryFromBytes};
 
 use crate::{
+    XxHashMap,
     crypto::rsa::{RsaDecryptor, RsaKey},
     dvdbnd::{
         bhd5::format::{BHD5_HEADER_LEN, Header as Bhd5Header},
@@ -27,7 +27,7 @@ pub struct KeyProvider<'a, 'k> {
 #[derive(Default, Debug)]
 pub struct Keys<'a> {
     pub game: Option<Box<str>>,
-    pub by_path: FxHashMap<&'a BhdPath, Option<RsaKey>>,
+    pub by_path: XxHashMap<&'a BhdPath, Option<RsaKey>>,
 }
 
 type PemPathMap = Vec<(String, SmallVec<[(String, Box<Path>); 1]>)>;
@@ -73,8 +73,8 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
         let mut game = game;
         let mut game_index = None;
 
-        let mut cache = FxHashMap::default();
-        let mut by_path = FxHashMap::default();
+        let mut cache = XxHashMap::default();
+        let mut by_path = XxHashMap::default();
 
         for (name, bhd_path) in &self.archives.paths {
             if f(bhd_path, None)? {
