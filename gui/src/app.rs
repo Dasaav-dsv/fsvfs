@@ -450,7 +450,7 @@ impl App {
         try_join!(
             unblock(move || child.wait()),
             unblock(move || {
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(Duration::from_millis(200));
                 command.spawn()
             })
         )?;
