@@ -1,14 +1,16 @@
-{
-  "211420": {
+[
+  {
+    "app_id": 211420,
     "name": "DarkSouls_PC",
     "bhds": [
-      "DATA/dvdbnd0.bhd",
-      "DATA/dvdbnd1.bhd",
-      "DATA/dvdbnd2.bhd",
-      "DATA/dvdbnd3.bhd"
+      "DATA/dvdbnd0.bhd5",
+      "DATA/dvdbnd1.bhd5",
+      "DATA/dvdbnd2.bhd5",
+      "DATA/dvdbnd3.bhd5"
     ]
   },
-  "236430": {
+  {
+    "app_id": 236430,
     "name": "DarkSouls2_PC",
     "bhds": [
       "Game/GameDataEbl.bhd",
@@ -18,7 +20,8 @@
       "Game/HqPartsEbl.bhd"
     ]
   },
-  "335300": {
+  {
+    "app_id": 335300,
     "name": "DarkSouls2Scholar_PC",
     "bhds": [
       "Game/GameDataEbl.bhd",
@@ -28,7 +31,8 @@
       "Game/LqPartsEbl.bhd"
     ]
   },
-  "374320": {
+  {
+    "app_id": 374320,
     "name": "DarkSouls3_PC",
     "bhds": [
       "Game/Data1.bhd",
@@ -40,7 +44,8 @@
       "Game/DLC2.bhd"
     ]
   },
-  "814380": {
+  {
+    "app_id": 814380,
     "name": "Sekiro_PC",
     "bhds": [
       "Data1.bhd",
@@ -50,13 +55,15 @@
       "Data5.bhd"
     ]
   },
-  "1039230": {
+  {
+    "app_id": 814380,
     "name": "SekiroSoundtrack_PC",
     "bhds": [
       "Artwork_MiniSoundtrack/Data.bhd"
     ]
   },
-  "1245620": {
+  {
+    "app_id": 1245620,
     "name": "EldenRing_PC",
     "bhds": [
       "Game/Data0.bhd",
@@ -69,7 +76,8 @@
       "Game/sd/sd_dlc02.bhd"
     ]
   },
-  "1888160": {
+  {
+    "app_id": 1888160,
     "name": "ArmoredCore6_PC",
     "bhds": [
       "Game/Data0.bhd",
@@ -79,7 +87,8 @@
       "Game/sd/sd.bhd"
     ]
   },
-  "2622380": {
+  {
+    "app_id": 2622380,
     "name": "EldenRingNightreign_PC",
     "bhds": [
       "Game/data0.bhd",
@@ -91,4 +100,4 @@
       "Game/sd/sd_dlc01.bhd"
     ]
   }
-}
+]
