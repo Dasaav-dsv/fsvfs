@@ -78,7 +78,7 @@ impl<F> DvdbndMount<F>
 where
     F: DvdbndFilesystem + Send + Sync + 'static,
 {
-    pub fn mount(self, mountpoint: &str) -> eyre::Result<()> {
+    pub fn mount(self, mountpoint: &str, piped: bool) -> eyre::Result<()> {
         require_projfs()?;
 
         let mountpoint = init_mountpoint(mountpoint)?;
@@ -88,7 +88,7 @@ where
         let mount_context = MountContext::new(self, mountpoint);
         let mount = mount_context.mount()?;
 
-        run_until_interrupted(mount)?;
+        run_until_interrupted(mount, piped)?;
 
         Ok(())
     }
@@ -518,7 +518,7 @@ fn file_basic_info(entry: &Entry<'_, DvdbndFile>) -> PRJ_FILE_BASIC_INFO {
 impl<F: DvdbndFilesystem> OnInterrupt for Arc<MountContext<F>> {
     type Error = eyre::Error;
 
-    fn on_interrupt(self) -> Result<(), Self::Error> {
+    fn interrupt(self) -> Result<(), Self::Error> {
         let mountpoint = self.mountpoint.to_string();
         info!("unmounting {mountpoint}");
 

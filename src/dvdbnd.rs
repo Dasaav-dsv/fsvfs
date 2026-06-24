@@ -32,6 +32,7 @@ pub fn mount(
     keys_dir: &Path,
     dict_dir: &Path,
     cache: Cache,
+    piped: bool,
 ) -> eyre::Result<()> {
     let archives = ArchivePaths::new(archives);
 
@@ -52,7 +53,7 @@ pub fn mount(
     );
 
     let mount = DvdbndMount::from_keys_and_dict(&keys, dict.as_ref(), cache)?;
-    mount.mount(mountpoint)?;
+    mount.mount(mountpoint, piped)?;
 
     Ok(())
 }
@@ -91,6 +92,7 @@ pub fn mount_from_args(args: DvdbndArgs) -> eyre::Result<()> {
         &keys_dir,
         &dict_dir,
         cache,
+        args.piped.unwrap_or_default(),
     )
 }
 

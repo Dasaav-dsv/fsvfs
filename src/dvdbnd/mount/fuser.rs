@@ -36,7 +36,7 @@ impl<F> DvdbndMount<F>
 where
     F: DvdbndFilesystem + Send + Sync + 'static,
 {
-    pub fn mount(self, mountpoint: &str) -> eyre::Result<()> {
+    pub fn mount(self, mountpoint: &str, piped: bool) -> eyre::Result<()> {
         fs::create_dir_all(mountpoint)?;
 
         let mut config = Config::default();
@@ -54,7 +54,7 @@ where
 
         let mount = spawn_mount2(ArcDvdbndMount::new(self), mountpoint, &config)?;
 
-        run_until_interrupted(mount)?;
+        run_until_interrupted(mount, piped)?;
 
         Ok(())
     }
@@ -399,7 +399,7 @@ fn file_type<T>(e: &Entry<'_, T>) -> FileType {
 impl OnInterrupt for BackgroundSession {
     type Error = eyre::Error;
 
-    fn on_interrupt(self) -> Result<(), Self::Error> {
+    fn interrupt(self) -> Result<(), Self::Error> {
         self.umount_and_join()?;
         Ok(())
     }
