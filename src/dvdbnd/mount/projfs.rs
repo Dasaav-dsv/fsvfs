@@ -13,7 +13,6 @@ use std::{
     time::Duration,
 };
 
-use color_eyre::eyre::{self, eyre};
 use eyre::Context;
 use futures_util::{FutureExt, TryFutureExt};
 use papaya::HashMap as PapayaMap;
@@ -581,7 +580,7 @@ fn require_projfs() -> eyre::Result<()> {
         }
     }
 
-    Err(eyre!(
+    Err(eyre::eyre!(
         "failed to enable ProjFS! See https://learn.microsoft.com/en-us/windows/win32/projfs/enabling-windows-projected-file-system"
     ))
 }
@@ -614,9 +613,11 @@ fn prompt_user_before_uac() -> eyre::Result<()> {
 
     match res {
         IDOK => Ok(()),
-        IDCANCEL => Err(eyre!("ProjFS initialization was canceled by the user")),
+        IDCANCEL => Err(eyre::eyre!(
+            "ProjFS initialization was canceled by the user"
+        )),
         ERROR => Err(WindowsError::from_thread().into()),
-        _ => Err(eyre!("unknown MessageBoxW return kind")),
+        _ => Err(eyre::eyre!("unknown MessageBoxW return kind")),
     }
 }
 

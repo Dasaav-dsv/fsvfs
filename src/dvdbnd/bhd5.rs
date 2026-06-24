@@ -1,4 +1,3 @@
-use color_eyre::eyre;
 use zerocopy::{BE, LE};
 
 use crate::dvdbnd::bhd5::format::File;

@@ -6,7 +6,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use color_eyre::eyre;
 use fuser::{
     AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags,
     Generation, INodeNo, KernelConfig, LockOwner, MountOption, OpenAccMode, OpenFlags, ReplyAttr,

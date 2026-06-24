@@ -35,7 +35,7 @@ fn error_popup(err: &eyre::Error) {
     MessageDialog::new()
         .set_level(MessageLevel::Error)
         .set_title("Error")
-        .set_description(format!("An error was encountered:\n{err:?}"))
+        .set_description(format!("fsvfs encountered an error:\n\n{err:?}"))
         .set_buttons(MessageButtons::Ok)
         .show();
 }

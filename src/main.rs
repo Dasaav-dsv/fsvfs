@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use clap::Parser;
-use color_eyre::eyre;
 use tracing::debug;
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
@@ -24,9 +23,7 @@ mod runas;
 type XxHashMap<K, V> = HashMap<K, V, Xxh3DefaultBuilder>;
 
 fn main() -> eyre::Result<()> {
-    color_eyre::install()?;
-
-    let _ = enable_ansi_console();
+    simple_eyre::install()?;
 
     tracing_subscriber::fmt()
         .with_ansi(true)
@@ -41,33 +38,9 @@ fn main() -> eyre::Result<()> {
     }
 }
 
-fn enable_ansi_console() -> color_eyre::Result<()> {
-    #[cfg(windows)]
-    unsafe {
-        use windows::Win32::System::Console::{
-            ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode,
-            GetStdHandle, STD_OUTPUT_HANDLE, SetConsoleMode,
-        };
-
-        let console = GetStdHandle(STD_OUTPUT_HANDLE)?;
-
-        let mut mode = ENABLE_PROCESSED_OUTPUT;
-        GetConsoleMode(console, &mut mode)?;
-
-        SetConsoleMode(
-            console,
-            mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-        )?;
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-
-    use color_eyre::eyre;
 
     #[allow(unused)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

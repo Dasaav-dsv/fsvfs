@@ -1,7 +1,5 @@
 use std::{fs, path::Path};
 
-use color_eyre::eyre;
-
 use crate::{
     XxHashMap,
     dvdbnd::{prefix_and_parent_to_lowercase, recursive_read_files},
