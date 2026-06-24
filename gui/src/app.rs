@@ -21,7 +21,7 @@ use futures_util::{
     stream, try_join,
 };
 use rfd::AsyncFileDialog;
-use slint::{ComponentHandle, Model, ModelExt, ModelRc, SharedString, spawn_local};
+use slint::{ComponentHandle, Model, ModelExt, ModelRc, SharedString, VecModel, spawn_local};
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use crate::{
@@ -38,7 +38,8 @@ pub struct App {
 }
 
 impl App {
-    const GAME_DIR_PLACEHOLDER: &str = "(Select or browse a game directory)";
+    const GAME_DIR_PLACEHOLDER: &str = "(Select a game directory or browse)";
+    const GAME_DIR_CUSTOM: &str = "(Custom selection)";
 
     #[inline]
     pub fn new() -> eyre::Result<Rc<Self>> {
@@ -131,23 +132,31 @@ impl App {
         let dirs = bhds
             .keys()
             .filter_map(|dir| dir.to_str().map(SharedString::from))
-            .collect::<Vec<_>>();
+            .collect::<VecModel<_>>();
 
         *self.bhds.borrow_mut() = bhds;
 
         let game_dir = self.get_current_game_dir();
-        let active_index = dirs.iter().position(|dir| *dir == game_dir).unwrap_or(0);
+
+        if game_dir == Self::GAME_DIR_CUSTOM {
+            dirs.push(game_dir.clone());
+        }
+
+        let active_index = dirs.iter().position(|dir| dir == game_dir).unwrap_or(0);
+        let active = dirs.row_data(active_index);
 
         self.set_game_dirs(GameDirs {
             active_index: active_index as i32,
-            dirs: ModelRc::from(dirs.as_slice()),
+            dirs: ModelRc::new(dirs),
         });
 
-        if let Some(active) = dirs.get(active_index) {
-            self.set_current_game_dir(active.clone());
+        if let Some(active) = active {
+            self.set_current_game_dir(active);
         }
 
-        self.clone().select_game_dir().await?;
+        if game_dir != Self::GAME_DIR_CUSTOM {
+            self.clone().select_game_dir().await?;
+        }
 
         Ok(())
     }
@@ -219,8 +228,15 @@ impl App {
     async fn select_game_dir(self: Rc<Self>) -> eyre::Result<()> {
         let game_dir = self.get_current_game_dir();
 
-        if game_dir == Self::GAME_DIR_PLACEHOLDER {
-            return Ok(());
+        match game_dir.as_str() {
+            Self::GAME_DIR_PLACEHOLDER => return Ok(()),
+            Self::GAME_DIR_CUSTOM => {
+                self.set_bhds_with_first(vec![], false);
+                self.set_game_name(SharedString::new());
+
+                return Ok(());
+            }
+            _ => {}
         }
 
         let game_dir_path = Path::new(&game_dir);
@@ -249,7 +265,7 @@ impl App {
             })
             .unwrap_or_default();
 
-        let mut bhds = stream::iter(&game.bhds)
+        let bhds = stream::iter(&game.bhds)
             .filter_map(|bhd| {
                 let bhd_path = game_dir_path.join(bhd);
                 let parent_dir = game_dir.clone();
@@ -274,26 +290,85 @@ impl App {
             .collect::<Vec<_>>()
             .await;
 
-        let first = BhdCheck {
-            name: slint::format!("({} BHDs)", bhds.len()),
-            parent_dir: game_dir,
-            checked: bhds.iter().all(|bhd| bhd.checked),
-        };
-
-        bhds.insert(0, first);
-
-        self.set_bhds(bhds.as_slice().into());
+        self.set_bhds_with_first(bhds, false);
 
         Ok(())
     }
 
     async fn browse_game_dir(self: Rc<Self>) -> eyre::Result<()> {
-        try_join!(
-            self.clone().browse_dir(AppWindow::set_current_game_dir),
-            self.update_bhds(),
-        )?;
+        if let Some(paths) = AsyncFileDialog::new()
+            .add_filter("BHD5", &["bhd", "bhd5"])
+            .pick_files()
+            .await
+        {
+            let mut bhds = match self.get_current_game_dir().as_str() {
+                Self::GAME_DIR_CUSTOM => self.get_bhds().iter().collect::<Vec<_>>(),
+                _ => {
+                    let GameDirs { active_index, dirs } = self.get_game_dirs();
 
-        Err(eyre::eyre!("not yet implemented"))
+                    let row_count = dirs.row_count();
+                    let last_index = row_count.wrapping_sub(1);
+
+                    if row_count == 0
+                        || active_index.max(0) as usize != last_index
+                        || dirs
+                            .row_data(last_index)
+                            .is_none_or(|last| last != Self::GAME_DIR_CUSTOM)
+                    {
+                        let dirs = dirs
+                            .iter()
+                            .chain([Self::GAME_DIR_CUSTOM.into()])
+                            .collect::<VecModel<_>>();
+
+                        self.set_game_dirs(GameDirs {
+                            dirs: ModelRc::new(dirs),
+                            active_index: row_count as i32,
+                        });
+                    }
+
+                    self.set_current_game_dir(Self::GAME_DIR_CUSTOM.into());
+                    self.set_game_name(SharedString::new());
+
+                    vec![]
+                }
+            };
+
+            bhds.extend(paths.iter().filter_map(|path| {
+                let path_str = path.inner().to_str()?;
+
+                Some(BhdCheck {
+                    name: path_str.into(),
+                    parent_dir: SharedString::new(),
+                    checked: true,
+                })
+            }));
+
+            self.set_bhds_with_first(bhds, true);
+        }
+
+        Ok(())
+    }
+
+    fn set_bhds_with_first(&self, mut bhds: Vec<BhdCheck>, dedup: bool) {
+        if bhds
+            .first()
+            .is_none_or(|bhd| !(bhd.name.starts_with('<') && bhd.name.ends_with(" BHDs>")))
+        {
+            bhds.insert(0, Default::default());
+        }
+
+        if dedup {
+            bhds[1..].sort_by_key(|bhd| bhd.name.clone());
+            bhds.dedup_by_key(|bhd| bhd.name.clone());
+        }
+
+        bhds[0] = BhdCheck {
+            name: slint::format!("<{} BHDs>", bhds.len() - 1),
+            parent_dir: SharedString::new(),
+            checked: bhds.iter().skip(1).all(|bhd| bhd.checked),
+        };
+
+        self.set_bhds(bhds.as_slice().into());
     }
 
     fn bind_on_bhd_checked(self: &Rc<Self>) {
@@ -427,7 +502,10 @@ impl AppContext {
             .iter()
             .skip(1)
             .filter(|&bhd| bhd.checked)
-            .map(|bhd| format!("{}/{}", self.current_game_dir.as_str(), bhd.name.as_str()))
+            .map(|bhd| match self.current_game_dir.as_str() {
+                App::GAME_DIR_CUSTOM => bhd.name.clone(),
+                game_dir => format!("{game_dir}/{}", bhd.name.as_str()),
+            })
             .collect::<Vec<_>>();
 
         if bhd_paths.is_empty() {
