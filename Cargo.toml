@@ -10,6 +10,7 @@ members = ["gui"]
 resolver = "3"
 
 [workspace.dependencies]
+embed-manifest = "1.5.0"
 eyre = "0.6.12"
 futures-util = { version = "0.3.32", default-features = false, features = [
     "std",
@@ -80,7 +81,7 @@ windows = { workspace = true, features = [
 ] }
 
 [target.'cfg(windows)'.build-dependencies]
-embed-manifest = "1.5.0"
+embed-manifest.workspace = true
 
 [dev-dependencies]
 steamlocate.workspace = true

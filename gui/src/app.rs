@@ -369,6 +369,13 @@ impl App {
             unix => "./fsvfs",
         });
 
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+            command.creation_flags(CREATE_NO_WINDOW.0);
+        }
+
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
