@@ -20,6 +20,7 @@ pub struct AppContext {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct BhdCheck {
     pub name: String,
+    pub parent_dir: String,
     pub checked: bool,
 }
 
@@ -42,6 +43,7 @@ impl App {
                 .iter()
                 .map(|bhd| BhdCheck {
                     name: bhd.name.into(),
+                    parent_dir: bhd.parent_dir.into(),
                     checked: bhd.checked,
                 })
                 .collect(),
@@ -74,6 +76,7 @@ impl App {
             .iter()
             .map(|bhd| crate::BhdCheck {
                 name: bhd.name.as_str().into(),
+                parent_dir: bhd.parent_dir.as_str().into(),
                 checked: bhd.checked,
             })
             .collect::<VecModel<_>>();
