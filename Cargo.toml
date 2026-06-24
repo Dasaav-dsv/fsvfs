@@ -15,7 +15,7 @@ eyre = "0.6.12"
 futures-util = { version = "0.3.32", default-features = false, features = [
     "std",
 ] }
-fxhash = "0.2.1"
+xxhash-rust = { version = "0.8.15", features = ["const_xxh3", "std", "xxh3"] }
 normpath = "1.5.1"
 steamlocate = "2.1.0"
 windows = "=0.62.2"
@@ -40,7 +40,6 @@ eytzinger = { version = "1.1.2", default-features = false, features = [
     "branchless",
 ] }
 futures-util.workspace = true
-fxhash.workspace = true
 heed = { version = "0.22.1", default-features = false }
 indexmap = "2.14.0"
 lz4_flex = { version = "0.13.1", default-features = false, features = [
@@ -63,7 +62,7 @@ smallvec = { version = "1.15.1", features = [
 thiserror = "2.0.18"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["ansi"] }
-xxhash-rust = { version = "0.8.15", features = ["const_xxh3", "std", "xxh3"] }
+xxhash-rust.workspace = true
 zerocopy = { version = "0.8.48", features = ["derive", "std"] }
 
 [target.'cfg(unix)'.dependencies]

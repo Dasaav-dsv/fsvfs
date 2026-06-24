@@ -1,6 +1,6 @@
 use std::{
     cell::{OnceCell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     ffi::OsStr,
     io,
     ops::Deref,
@@ -15,9 +15,9 @@ use async_io::block_on;
 use blocking::unblock;
 use eyre::{Context, OptionExt};
 use futures_util::{FutureExt, StreamExt, TryStreamExt, future, stream, try_join};
-use fxhash::FxHashMap;
 use rfd::AsyncFileDialog;
 use slint::{ComponentHandle, Model, ModelExt, ModelRc, SharedString, spawn_local};
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 #[cfg(windows)]
 use crate::windows::ChildKiller;
@@ -244,7 +244,7 @@ impl App {
                     Arc::new(
                         bhds.iter()
                             .map(|bhd| (bhd.name, bhd.checked))
-                            .collect::<FxHashMap<_, _>>(),
+                            .collect::<HashMap<_, _, Xxh3DefaultBuilder>>(),
                     )
                 })
             })

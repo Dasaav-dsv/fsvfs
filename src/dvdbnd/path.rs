@@ -4,8 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fxhash::FxBuildHasher;
 use indexmap::IndexMap;
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use crate::dvdbnd::bhd5::strip_bhd_extension;
 
@@ -14,7 +14,7 @@ pub struct BhdPath(Box<Path>);
 
 #[derive(Default, Debug)]
 pub struct ArchivePaths {
-    pub paths: IndexMap<Box<str>, BhdPath, FxBuildHasher>,
+    pub paths: IndexMap<Box<str>, BhdPath, Xxh3DefaultBuilder>,
 }
 
 impl BhdPath {

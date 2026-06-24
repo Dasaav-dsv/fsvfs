@@ -170,10 +170,10 @@ fn prefix_and_parent_to_lowercase(path: &Path) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{collections::HashMap, sync::Mutex};
 
     use color_eyre::eyre;
-    use fxhash::{FxBuildHasher, FxHashMap};
+    use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
     use crate::{
         dvdbnd::{
@@ -268,8 +268,8 @@ mod tests {
         }
 
         pub fn bhd_keys(self) -> eyre::Result<Keys<'static>> {
-            static KEYS: Mutex<FxHashMap<SteamAppId, &'static ArchivePaths>> =
-                Mutex::new(FxHashMap::with_hasher(FxBuildHasher::new()));
+            static KEYS: Mutex<HashMap<SteamAppId, &'static ArchivePaths, Xxh3DefaultBuilder>> =
+                Mutex::new(HashMap::with_hasher(Xxh3DefaultBuilder::new()));
 
             let install_dir = self.install_dir().unwrap();
 

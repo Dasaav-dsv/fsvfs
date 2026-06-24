@@ -3,15 +3,18 @@ use std::{cell::RefCell, fs, io, path::Path, pin::pin, sync::Arc};
 use color_eyre::eyre;
 use compio::{dispatcher::Dispatcher, fs::File};
 use futures_util::TryStreamExt;
-use fxhash::{FxBuildHasher, FxHashMap};
 use rayon::{
     ThreadPoolBuilder,
     iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator},
 };
 use tracing::info;
-use xxhash_rust::{const_xxh3, xxh3::xxh3_128_with_seed};
+use xxhash_rust::{
+    const_xxh3,
+    xxh3::{Xxh3DefaultBuilder, xxh3_128_with_seed},
+};
 
 use crate::{
+    XxHashMap,
     cache::Cache,
     dvdbnd::{
         bhd5::Bhd5File,
@@ -277,8 +280,8 @@ where
 impl BdtTls {
     async fn open(&self, file: &DvdbndFile) -> io::Result<File> {
         thread_local! {
-            static MAP: RefCell<FxHashMap<Box<Path>, File>> =
-                const { RefCell::new(FxHashMap::with_hasher(FxBuildHasher::new())) };
+            static MAP: RefCell<XxHashMap<Box<Path>, File>> =
+                const { RefCell::new(XxHashMap::with_hasher(Xxh3DefaultBuilder::new())) };
         }
 
         let path = &self.0[&file.src_id].path;
