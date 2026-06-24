@@ -8,14 +8,15 @@ use std::{
     sync::Arc,
 };
 
-use color_eyre::eyre;
 use rayon::iter::{
     IntoParallelIterator, IntoParallelRefIterator, ParallelExtend, ParallelIterator,
 };
 use rkyv::{Archive, Deserialize, Portable, Serialize};
 
 use crate::{
-    XxHashMap, cache::Cache, dvdbnd::{
+    XxHashMap,
+    cache::Cache,
+    dvdbnd::{
         bhd5::{
             self, Bhd5File, ByteOrderExt,
             format::{Buckets, Encryption, FileEntry as Bhd5Entry},
@@ -23,7 +24,8 @@ use crate::{
         dict::Dictionary,
         filesystem::encryption::{EncryptionId, EncryptionStore, store_encryption},
         path::BhdPath,
-    }, filesystem::{Config, ReadOnlyFilesystem, Rofs, object::RofsObject},
+    },
+    filesystem::{Config, ReadOnlyFilesystem, Rofs, object::RofsObject},
 };
 
 pub mod aligned;

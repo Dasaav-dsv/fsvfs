@@ -4,8 +4,6 @@ use std::{
     thread,
 };
 
-use color_eyre::eyre;
-
 pub trait OnInterrupt: Sized {
     type Error: Send + Sync + 'static;
 

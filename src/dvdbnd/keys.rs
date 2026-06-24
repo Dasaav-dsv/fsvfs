@@ -5,7 +5,6 @@ use std::{
     slice,
 };
 
-use color_eyre::eyre;
 use smallvec::{SmallVec, smallvec_inline};
 use zerocopy::{BE, LE, TryFromBytes};
 

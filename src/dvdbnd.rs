@@ -8,7 +8,6 @@ use std::{
     sync::LazyLock,
 };
 
-use color_eyre::eyre;
 use tracing::info;
 
 use crate::{
@@ -174,7 +173,6 @@ fn prefix_and_parent_to_lowercase(path: &Path) -> (String, String) {
 mod tests {
     use std::{collections::HashMap, sync::Mutex};
 
-    use color_eyre::eyre;
     use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
     use crate::{

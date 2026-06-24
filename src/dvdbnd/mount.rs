@@ -1,6 +1,5 @@
 use std::{cell::RefCell, fs, io, path::Path, pin::pin, sync::Arc};
 
-use color_eyre::eyre;
 use compio::{dispatcher::Dispatcher, fs::File};
 use futures_util::TryStreamExt;
 use rayon::{

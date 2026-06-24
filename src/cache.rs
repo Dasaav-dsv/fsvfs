@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use color_eyre::eyre;
 use heed::{Env, EnvOpenOptions, types::Bytes};
 use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 use rkyv::{
@@ -14,7 +13,7 @@ use rkyv::{
     to_bytes,
     util::AlignedVec,
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 #[derive(Clone, Default, Debug)]
 pub struct Cache {
@@ -34,7 +33,7 @@ impl Cache {
                 .map_size(64 * MB)
                 .max_readers(254)
                 .open(path)
-                .inspect_err(|e| error!("caching is not available: {e}"))
+                .inspect_err(|e| warn!("caching is not available: {e}"))
                 .ok()
         };
 

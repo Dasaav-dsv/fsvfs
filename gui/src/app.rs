@@ -2,19 +2,24 @@ use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
-    io::{self, pipe},
+    io::{self, PipeReader, Read, pipe},
     ops::Deref,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     rc::Rc,
     sync::Arc,
+    thread,
     time::Duration,
 };
 
-use async_io::block_on;
+use async_io::{Timer, block_on};
 use blocking::unblock;
-use eyre::{Context, OptionExt};
-use futures_util::{FutureExt, StreamExt, TryStreamExt, future, stream, try_join};
+use eyre::{Context, OptionExt, Report};
+use futures_util::{
+    FutureExt, StreamExt, TryStreamExt,
+    future::{self, select},
+    stream, try_join,
+};
 use rfd::AsyncFileDialog;
 use slint::{ComponentHandle, Model, ModelExt, ModelRc, SharedString, spawn_local};
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
@@ -316,19 +321,69 @@ impl App {
     }
 
     async fn mount(self: Rc<Self>) -> eyre::Result<()> {
-        let context = self.get_context();
+        let context = self.get_context().check().await?;
 
-        if context.current_game_dir == Self::GAME_DIR_PLACEHOLDER {
+        let bhd_paths = context.bhd_paths().await?;
+
+        let (exit_guard, _drop_on_exit) = pipe()?;
+        let (stderr_reader, stderr) = pipe()?;
+
+        let mut command = Box::new(Command::new(cfg_select! {
+            unix => "./fsvfs",
+            windows => ".\\fsvfs.exe",
+        }));
+
+        command
+            .app_args(&context)
+            .arg("--piped")
+            .args(bhd_paths)
+            .stdin(exit_guard)
+            .stderr(stderr);
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+            command.creation_flags(CREATE_NO_WINDOW.0);
+        }
+
+        let mut child = unblock(move || command.spawn()).await?;
+
+        let read_stderr = unblock(move || error_popup_from_pipe(stderr_reader));
+
+        let child_wait = unblock(move || {
+            child.wait()?;
+            Ok(())
+        });
+
+        let open_dir = async {
+            let mut command = open_dir_command(&context.mount_point);
+            Timer::after(Duration::from_millis(200)).await;
+            unblock(move || command.spawn()).await
+        };
+
+        try_join!(
+            select(read_stderr, child_wait).map(|either| either.factor_first().0),
+            open_dir
+        )?;
+
+        Ok(())
+    }
+}
+
+impl AppContext {
+    async fn check(self) -> eyre::Result<Self> {
+        if self.current_game_dir == App::GAME_DIR_PLACEHOLDER {
             return Err(eyre::eyre!("you must select or browse a game directory"));
         }
 
-        if context.mount_point.is_empty() {
+        if self.mount_point.is_empty() {
             return Err(eyre::eyre!(
                 "mount point must be an existing, empty directory"
             ));
         }
 
-        if async_fs::read_dir(&context.mount_point)
+        if async_fs::read_dir(&self.mount_point)
             .await
             .wrap_err("mount point must be an existing directory")?
             .next()
@@ -352,29 +407,27 @@ impl App {
         }
 
         try_join!(
-            check_is_dir(&context.keys_path, "keys"),
-            check_is_dir(&context.dict_path, "dictionary"),
+            check_is_dir(&self.keys_path, "keys"),
+            check_is_dir(&self.dict_path, "dictionary"),
             async {
-                if context.use_cache {
-                    check_is_dir(&context.cache_path, "cache").await
+                if self.use_cache {
+                    check_is_dir(&self.cache_path, "cache").await
                 } else {
                     Ok(())
                 }
             }
         )?;
 
-        let bhd_paths = context
+        Ok(self)
+    }
+
+    async fn bhd_paths(&self) -> eyre::Result<Vec<String>> {
+        let bhd_paths = self
             .bhds
             .iter()
             .skip(1)
             .filter(|&bhd| bhd.checked)
-            .map(|bhd| {
-                format!(
-                    "{}/{}",
-                    context.current_game_dir.as_str(),
-                    bhd.name.as_str()
-                )
-            })
+            .map(|bhd| format!("{}/{}", self.current_game_dir.as_str(), bhd.name.as_str()))
             .collect::<Vec<_>>();
 
         if bhd_paths.is_empty() {
@@ -391,72 +444,68 @@ impl App {
             return Err(eyre::eyre!("all BHD paths must exist and be accessible"));
         }
 
-        // TODO: pipe errors to stderr.
-        let mut command = Command::new(cfg_select! {
-            unix => "./fsvfs",
-            windows => ".\\fsvfs.exe",
-        });
+        Ok(bhd_paths)
+    }
+}
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-            command.creation_flags(CREATE_NO_WINDOW.0);
-        }
+trait CommandExt {
+    fn app_args(&mut self, context: &AppContext) -> &mut Self;
+}
 
-        let (exit_guard, _drop_on_exit) = pipe()?;
+impl CommandExt for Command {
+    fn app_args(&mut self, context: &AppContext) -> &mut Self {
+        self.arg("dvdbnd");
 
-        command
-            .stdin(exit_guard)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        command.args(["dvdbnd", "--piped"]);
-
-        command.args(["-m", &context.mount_point]);
+        self.args(["-m", &context.mount_point]);
 
         if !context.keys_path.is_empty() {
-            command.args(["-k", &context.keys_path]);
+            self.args(["-k", &context.keys_path]);
         }
 
         if !context.dict_path.is_empty() {
-            command.args(["-d", &context.dict_path]);
+            self.args(["-d", &context.dict_path]);
         }
 
         if context.use_cache {
             if !context.cache_path.is_empty() {
-                command.args(["-c", &context.cache_path]);
+                self.args(["-c", &context.cache_path]);
             }
         } else {
-            command.arg("--no-cache");
+            self.arg("--no-cache");
         }
 
         if !context.game_name.is_empty() {
-            command.args(["-g", &context.game_name]);
+            self.args(["-g", &context.game_name]);
         }
 
-        command.args(bhd_paths);
-
-        let mut child = unblock(move || command.spawn()).await?;
-
-        let mut command = Command::new(cfg_select! {
-            windows => "explorer.exe",
-            target_os = "macos" => "open",
-            unix => "xdg-open",
-        });
-
-        command.arg(&context.mount_point);
-
-        try_join!(
-            unblock(move || child.wait()),
-            unblock(move || {
-                std::thread::sleep(Duration::from_millis(200));
-                command.spawn()
-            })
-        )?;
-
-        Ok(())
+        self
     }
+}
+
+fn error_popup_from_pipe(mut pipe: PipeReader) -> io::Result<()> {
+    let mut output = vec![];
+
+    while pipe.read_to_end(&mut output)? == 0 {
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    let msg = String::from_utf8_lossy(&output).into_owned();
+
+    error_popup(&Report::msg(msg));
+
+    Ok(())
+}
+
+fn open_dir_command<S: AsRef<OsStr>>(path: S) -> Command {
+    let mut command = Command::new(cfg_select! {
+        windows => "explorer.exe",
+        target_os = "macos" => "open",
+        unix => "xdg-open",
+    });
+
+    command.arg(path);
+
+    command
 }
 
 impl Deref for App {
