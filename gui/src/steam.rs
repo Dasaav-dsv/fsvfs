@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 use steamlocate::locate_all;
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
-pub struct LocateConfig(BTreeMap<u32, Rc<Game>>);
+pub struct LocateConfig(Vec<Rc<Game>>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Game {
+    pub app_id: u32,
     pub name: String,
     pub bhds: Vec<String>,
 }
@@ -32,10 +33,12 @@ impl LocateConfig {
             })
             .await;
 
-            let mut games_iter = stream::iter(&self.0).flat_map_unordered(None, |(&app_id, rc)| {
+            let mut games_iter = stream::iter(&self.0).flat_map_unordered(None, |rc| {
                 stream::iter(&libraries)
                     .filter_map(move |library| async move {
                         let library_ = library.clone();
+                        let app_id = rc.app_id;
+
                         let app = unblock(move || library_.app(app_id)).await?.ok()?;
 
                         Some((library.resolve_app_dir(&app), rc.clone()))
