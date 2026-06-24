@@ -2,7 +2,7 @@ use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
-    io,
+    io::{self, pipe},
     ops::Deref,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -19,8 +19,6 @@ use rfd::AsyncFileDialog;
 use slint::{ComponentHandle, Model, ModelExt, ModelRc, SharedString, spawn_local};
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
-#[cfg(windows)]
-use crate::windows::ChildKiller;
 use crate::{
     AppWindow, BhdCheck, GameDirs,
     context::AppContext,
@@ -32,8 +30,6 @@ pub struct App {
     window: AppWindow,
     locate_config: OnceCell<LocateConfig>,
     bhds: RefCell<BTreeMap<PathBuf, Rc<Game>>>,
-    #[cfg(windows)]
-    child_killer: ChildKiller,
 }
 
 impl App {
@@ -47,8 +43,6 @@ impl App {
             window,
             locate_config: OnceCell::new(),
             bhds: RefCell::default(),
-            #[cfg(windows)]
-            child_killer: ChildKiller::new()?,
         });
 
         app.set_context(AppContext {
@@ -410,12 +404,14 @@ impl App {
             command.creation_flags(CREATE_NO_WINDOW.0);
         }
 
+        let (exit_guard, _drop_on_exit) = pipe()?;
+
         command
-            .stdin(Stdio::null())
+            .stdin(exit_guard)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        command.arg("dvdbnd");
+        command.args(["dvdbnd", "--piped"]);
 
         command.args(["-m", &context.mount_point]);
 
@@ -441,10 +437,7 @@ impl App {
 
         command.args(bhd_paths);
 
-        let _child = unblock(move || command.spawn()).await?;
-
-        #[cfg(windows)]
-        self.child_killer.kill_on_exit(&_child)?;
+        let mut child = unblock(move || command.spawn()).await?;
 
         let mut command = Command::new(cfg_select! {
             windows => "explorer.exe",
@@ -454,11 +447,13 @@ impl App {
 
         command.arg(&context.mount_point);
 
-        unblock(move || {
-            std::thread::sleep(Duration::from_millis(250));
-            command.spawn()
-        })
-        .await?;
+        try_join!(
+            unblock(move || child.wait()),
+            unblock(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                command.spawn()
+            })
+        )?;
 
         Ok(())
     }

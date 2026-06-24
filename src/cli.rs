@@ -69,6 +69,10 @@ pub struct DvdbndArgs {
 
     #[command(flatten)]
     pub cache: CacheArgs,
+
+    /// fsvfs internal; stdin acts as an exit guard for the parent process.
+    #[arg(long, num_args(0), default_missing_value = "true", hide(true))]
+    pub piped: Option<bool>,
 }
 
 #[derive(Args, Debug)]

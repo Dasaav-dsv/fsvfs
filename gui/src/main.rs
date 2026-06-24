@@ -11,8 +11,6 @@ use crate::app::App;
 mod app;
 mod context;
 mod steam;
-#[cfg(windows)]
-mod windows;
 
 slint::include_modules!();
 
