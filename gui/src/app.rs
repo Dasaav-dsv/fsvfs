@@ -330,7 +330,7 @@ impl App {
 
         if async_fs::read_dir(&context.mount_point)
             .await
-            .with_context(|| "mount point must be an existing directory")?
+            .wrap_err("mount point must be an existing directory")?
             .next()
             .await
             .is_some()

@@ -14,6 +14,7 @@ use std::{
 };
 
 use color_eyre::eyre::{self, eyre};
+use eyre::Context;
 use futures_util::{FutureExt, TryFutureExt};
 use papaya::HashMap as PapayaMap;
 use tempfile::TempDir;
@@ -620,11 +621,8 @@ fn prompt_user_before_uac() -> eyre::Result<()> {
 }
 
 fn init_mountpoint(mountpoint: &str) -> eyre::Result<HSTRING> {
-    if fs::read_dir(mountpoint)?.count() != 0 {
-        return Err(eyre!(
-            "the filesystem must be mounted in an empty directory"
-        ));
-    }
+    fs::remove_dir(mountpoint).wrap_err("the filesystem must be mounted in an empty directory")?;
+    fs::create_dir(mountpoint)?;
 
     let guid = get_or_create_mount_guid(mountpoint)?;
 
