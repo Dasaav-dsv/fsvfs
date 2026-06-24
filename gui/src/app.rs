@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     rc::Rc,
+    time::Duration,
 };
 
 use async_io::block_on;
@@ -420,7 +421,11 @@ impl App {
 
         command.arg(&context.mount_point);
 
-        unblock(move || command.spawn()).await?;
+        unblock(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            command.spawn()
+        })
+        .await?;
 
         Ok(())
     }
