@@ -2,6 +2,8 @@
 
 Access archived game files (Dark Souls, Armored Core, Elden Ring...) with this cross platform userspace filesystem framework without needing to unpack and store tens of gigabytes of (duplicate) data.
 
+Use the cross platform GUI fsvfs-gui to conveniently manage multiple mounts and mount configurations. Installed Steam games are detected automatically and are easy to mount.
+
 This is a work in progress, the CLI is unstable and file integrity is on a best effort basis (until I introduce integrity checking at least) so YMMV.
 
 ## Requirements
@@ -12,11 +14,19 @@ A x86-64-v3 capable CPU (AVX2 and BMI2 ISAs). This requirement may be relaxed in
 
 Kernel with [FUSE](https://www.kernel.org/doc/html/next/filesystems/fuse.html) support. fsvfs fully relies on [fuser](https://crates.io/crates/fuser/0.17.0) to handle the kernel communication, see its README for more info.
 
+fsvfs-gui requires xdg-utils to be installed.
+
 ### Windows
 
 [ProjFS](https://learn.microsoft.com/en-us/windows/win32/projfs/projected-file-system), an optional Windows feature. fsvfs will attempt to enable it, which may ask you for Administrator priveleges in PowerShell. A restart of fsvfs or your system may be required right after and the feature stays enabled going forward.
 
-## Usage
+## Usage (GUI)
+
+Launch fsvfs-gui and select an installed Steam game directory from the dropdown (or manually browse individual files) and pick the mount directory, *which must be empty*, then press "Mount filesystem".
+
+Check `Help -> About` at the top of the GUI for information about individual options.
+
+## Usage (CLI)
 
 Show help:
 ```bash
