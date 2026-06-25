@@ -25,7 +25,7 @@ export component AppWindow inherits Window {
     title: "fsvfs GUI";
 
     preferred-width: 720px;
-    preferred-height: 480px;
+    preferred-height: 540px;
 
     in-out property keys-path <=> keys-browse.path;
     in-out property dict-path <=> dict-browse.path;
@@ -38,6 +38,8 @@ export component AppWindow inherits Window {
     in-out property <[BhdCheck]> bhds;
 
     in-out property mount-point <=> mount-browse.path;
+    in-out property mount-enabled <=> mount-button.enabled;
+
     in-out property game-name <=> game-edit.text;
 
     callback menu-opened();

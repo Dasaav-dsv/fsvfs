@@ -403,6 +403,8 @@ impl App {
     }
 
     async fn mount(self: Rc<Self>) -> eyre::Result<()> {
+        let _disable_mount = self.toggle(AppWindow::set_mount_enabled, false);
+
         let context = self.get_context().check().await?;
 
         let bhd_paths = context.bhd_paths().await?;
@@ -438,7 +440,8 @@ impl App {
             Ok(())
         });
 
-        let open_dir = async {
+        let open_dir = async move {
+            let _disable_mount = _disable_mount;
             let mut command = open_dir_command(&context.mount_point);
             Timer::after(Duration::from_millis(200)).await;
             unblock(move || command.spawn()).await
@@ -450,6 +453,19 @@ impl App {
         )?;
 
         Ok(())
+    }
+
+    fn toggle<F>(self: &Rc<Self>, mut f: F, enable: bool) -> ToggleGuard<F>
+    where
+        F: FnMut(&AppWindow, bool),
+    {
+        f(self, enable);
+
+        ToggleGuard {
+            app: self.clone(),
+            enable: !enable,
+            f,
+        }
     }
 }
 
@@ -530,6 +546,24 @@ impl AppContext {
         }
 
         Ok(bhd_paths)
+    }
+}
+
+struct ToggleGuard<F>
+where
+    F: FnMut(&AppWindow, bool),
+{
+    app: Rc<App>,
+    enable: bool,
+    f: F,
+}
+
+impl<F> Drop for ToggleGuard<F>
+where
+    F: FnMut(&AppWindow, bool),
+{
+    fn drop(&mut self) {
+        (self.f)(&self.app, self.enable);
     }
 }
 
