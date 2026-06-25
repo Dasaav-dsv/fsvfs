@@ -28,6 +28,10 @@ jobs:
             archive: fsvfs-windows-amd64.7z
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Install fontconfig
+        if: ${{ matrix.os == ubuntu-latest }}
+        run: sudo apt-get install -y libfontconfig1-dev
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
