@@ -18,12 +18,14 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            exe: fsvfs
+            cli: fsvfs
+            gui: fsvfs-gui
             archive: fsvfs-linux-amd64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            exe: fsvfs.exe
-            archive: fsvfs-windows-amd64.zip
+            cli: fsvfs.exe
+            gui: fsvfs-gui.exe
+            archive: fsvfs-windows-amd64.7z
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -41,13 +43,17 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Build
+      - name: Build CLI
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build GUI
+        run: cargo build --release -p fsvfs-gui --target ${{ matrix.target }}
 
       - name: Archive
         run: |
           mv dist fsvfs
-          cp target/${{ matrix.target }}/release/${{ matrix.exe }} fsvfs/${{ matrix.exe }}
+          cp target/${{ matrix.target }}/release/${{ matrix.cli }} fsvfs/${{ matrix.cli }}
+          cp target/${{ matrix.target }}/release/${{ matrix.gui }} fsvfs/${{ matrix.gui }}
           tar cafv ${{ matrix.archive }} fsvfs/*
 
       - name: Configure git
