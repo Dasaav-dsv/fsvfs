@@ -18,8 +18,7 @@ normpath.workspace = true
 rfd = { version = "0.17.2", features = ["file-handle-inner"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = "1.0.150"
-# https://github.com/slint-ui/slint/pull/11341
-slint = { version = "1.17.0", git = "https://github.com/slint-ui/slint.git", rev = "d38b2d6bfffa309f6d5c8ea66cb2126ace52b264", default-features = false, features = [
+slint = { version = "1.17.0", default-features = false, features = [
     "std",
     "compat-1-2",
     "accessibility",
@@ -33,7 +32,7 @@ xxhash-rust.workspace = true
 windows = { workspace = true, features = ["Win32_System_Threading"] }
 
 [build-dependencies]
-slint-build = { version = "1.17.0", git = "https://github.com/slint-ui/slint.git", rev = "d38b2d6bfffa309f6d5c8ea66cb2126ace52b264" }
+slint-build = "1.17.0"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest.workspace = true
