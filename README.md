@@ -4,7 +4,9 @@ Access archived game files (Dark Souls, Armored Core, Elden Ring...) with this c
 
 Use the cross platform GUI fsvfs-gui to conveniently manage multiple mounts and mount configurations. Installed Steam games are detected automatically and are easy to mount.
 
-This is a work in progress, the CLI is unstable and file integrity is on a best effort basis (until I introduce integrity checking at least) so YMMV.
+<img width="1000" height="760" alt="Screenshot_20260625_132036" src="https://github.com/user-attachments/assets/50088be4-5751-40e3-a918-d7e8a00f44d1" />
+
+DISCLAIMER: This is a work in progress, the CLI is unstable and file integrity is on a best effort basis (until I introduce integrity checking at least) so YMMV.
 
 ## Requirements
 
