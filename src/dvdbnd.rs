@@ -57,7 +57,7 @@ pub fn mount(
     Ok(())
 }
 
-pub fn mount_from_args(args: DvdbndArgs) -> eyre::Result<()> {
+pub fn mount_from_args(mut args: DvdbndArgs) -> eyre::Result<()> {
     let app_dir = app_dir();
     tracing::debug!(?app_dir);
 
@@ -78,6 +78,8 @@ pub fn mount_from_args(args: DvdbndArgs) -> eyre::Result<()> {
         .map_or_else(|| app_dir.join("cache"), PathBuf::from);
 
     tracing::info!(?keys_dir, ?dict_dir, ?cache_dir);
+
+    args.game.as_deref_mut().map(str::make_ascii_lowercase);
 
     let cache = match args.cache.no_cache {
         Some(true) => Cache::empty(),

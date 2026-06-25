@@ -14,7 +14,7 @@ use crate::{
     dvdbnd::{
         bhd5::format::{BHD5_HEADER_LEN, Header as Bhd5Header},
         path::{ArchivePaths, BhdPath},
-        prefix_and_parent_to_lowercase, recursive_read_files,
+        recursive_read_files,
     },
 };
 
@@ -29,7 +29,7 @@ pub struct Keys<'a> {
     pub by_path: XxHashMap<&'a BhdPath, Option<RsaKey>>,
 }
 
-type PemPathMap = Vec<(String, SmallVec<[(String, Box<Path>); 1]>)>;
+type PemPathMap = Vec<(String, SmallVec<[Box<Path>; 1]>)>;
 
 impl<'a, 'k> KeyProvider<'a, 'k> {
     pub fn new(archives: &'a ArchivePaths, keys_dir: &'k Path) -> Self {
@@ -75,7 +75,7 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
         let mut cache = XxHashMap::default();
         let mut by_path = XxHashMap::default();
 
-        for (name, bhd_path) in &self.archives.paths {
+        for bhd_path in self.archives.paths.values() {
             if f(bhd_path, None)? {
                 by_path.insert(bhd_path, None);
                 continue;
@@ -83,17 +83,16 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
 
             for (game_name, pem_paths) in game_index
                 .or_else(|| {
-                    game_index = game
-                        .and_then(|game| pem_paths.binary_search_by_key(&game, |(k, _)| k).ok());
+                    game_index = game.and_then(|game| {
+                        pem_paths.binary_search_by_key(&game, |(game, _)| game).ok()
+                    });
+
                     game_index
                 })
                 .map(|i| slice::from_ref(&pem_paths[i]))
                 .unwrap_or_else(|| pem_paths.as_slice())
             {
-                for (_, pem_path) in pem_paths
-                    .iter()
-                    .filter(|(pem_name, _)| **pem_name == **name)
-                {
+                for pem_path in pem_paths {
                     let key = match cache.get(&**pem_path) {
                         Some(key) => key,
                         None => {
@@ -128,11 +127,18 @@ impl<'a, 'k> KeyProvider<'a, 'k> {
             })
             .try_fold(PemPathMap::new(), |mut map, path| -> io::Result<_> {
                 let path = path?.into_boxed_path();
-                let (name, game) = prefix_and_parent_to_lowercase(&path);
-                match map.binary_search_by_key(&&*game, |(k, _)| k) {
-                    Ok(i) => map[i].1.push((name, path)),
-                    Err(i) => map.insert(i, (game, smallvec_inline![(name, path)])),
+
+                let game = path
+                    .parent()
+                    .and_then(|parent| parent.file_name()?.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+
+                match map.binary_search_by_key(&&*game, |(game, _)| game) {
+                    Ok(i) => map[i].1.push(path),
+                    Err(i) => map.insert(i, (game, smallvec_inline![path])),
                 }
+
                 Ok(map)
             })
     }
