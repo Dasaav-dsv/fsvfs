@@ -162,9 +162,6 @@ export component AppWindow inherits Window {
                         for bhd[i] in bhds: CheckBox {
                             height: 20px;
                             text: bhd.name;
-                            // FIXME: uncomment for builds, until Slint 1.17.0 releases.
-                            // Slint viewer is built with an older Slint version which does not support
-                            // model two way bindings yet.
                             checked <=> bhd.checked;
                             toggled() => bhd-checked(i);
                         }
